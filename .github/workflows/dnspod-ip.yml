@@ -1,0 +1,40 @@
+name: Update Cloudflare优选IP to DNSPod
+
+on:
+  schedule:
+    # 每30分钟运行一次（GitHub Actions 最小间隔为5分钟，此处设为 */30 表示每30分钟）
+    - cron: '30 */2 * * *'
+  workflow_dispatch:      # 支持手动触发
+
+jobs:
+  update-dns:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 缓存 pip 依赖
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 运行更新脚本
+        env:
+          TENCENT_SECRET_ID: ${{ secrets.TENCENT_SECRET_ID }}
+          TENCENT_SECRET_KEY: ${{ secrets.TENCENT_SECRET_KEY }}
+          DOMAIN: ${{ secrets.DOMAIN }}
+          RECORD_NAME: ${{ secrets.RECORD_NAME }}
+          ISP_IP_COUNT: ${{ secrets.ISP_IP_COUNT || '2' }}          # 默认2，可在 Secrets 中覆盖
+          DEFAULT_IP_COUNT: ${{ secrets.DEFAULT_IP_COUNT || '2' }}  # 默认2
+        run: python dnspod.py
