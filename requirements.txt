@@ -1,2 +1,3 @@
 requests
 tencentcloud-sdk-python
+beautifulsoup4
