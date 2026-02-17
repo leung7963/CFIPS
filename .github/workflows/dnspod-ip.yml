@@ -37,4 +37,6 @@ jobs:
           RECORD_NAME: ${{ secrets.RECORD_NAME }}
           ISP_IP_COUNT: ${{ secrets.ISP_IP_COUNT || '2' }}          # 默认2，可在 Secrets 中覆盖
           DEFAULT_IP_COUNT: ${{ secrets.DEFAULT_IP_COUNT || '2' }}  # 默认2
+          TELEGRAM_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python dnspod.py
