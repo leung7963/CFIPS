@@ -1,9 +1,9 @@
 name: Update Cloudflare优选IP to DNSPod
 
 on:
-  schedule:
+  #schedule:
     # 每30分钟运行一次（GitHub Actions 最小间隔为5分钟，此处设为 */30 表示每30分钟）
-    - cron: '30 */2 * * *'
+    #- cron: '30 */2 * * *'
   workflow_dispatch:      # 支持手动触发
 
 jobs:
