@@ -144,8 +144,9 @@ def add_record(domain, sub, record_type, line, value):
         req_add.RecordType = record_type
         req_add.RecordLine = line
         req_add.Value = value
+        req_add.TTL = 86400  # 设置TTL为24小时
         client.CreateRecord(req_add)
-        print(f"新增记录: {sub} ({line}) [{record_type}] -> {value}")
+        print(f"新增记录: {sub} ({line}) [{record_type}] -> {value} (TTL=86400)")
         return True
     except Exception as e:
         print(f"添加记录失败 {sub} ({line}) [{record_type}]: {e}")
