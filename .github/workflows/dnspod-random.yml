@@ -43,18 +43,18 @@ jobs:
           RECORD_NAME: ${{ secrets.RECORD_NAME || '@' }}
 
           # IP 数量配置（脚本中已设默认值，可根据需要覆盖）
-          ISP_IP_COUNT: ${{ secrets.ISP_IP_COUNT }}
-          DEFAULT_IP_COUNT: ${{ secrets.DEFAULT_IP_COUNT }}
-          GENERATE_IPV6: ${{ secrets.GENERATE_IPV6 }}
-          ISP_IP_COUNT_V6: ${{ secrets.ISP_IP_COUNT_V6 }}
-          DEFAULT_IP_COUNT_V6: ${{ secrets.DEFAULT_IP_COUNT_V6 }}
+          #ISP_IP_COUNT: ${{ secrets.ISP_IP_COUNT }}
+          #DEFAULT_IP_COUNT: ${{ secrets.DEFAULT_IP_COUNT }}
+          #GENERATE_IPV6: ${{ secrets.GENERATE_IPV6 }}
+          #ISP_IP_COUNT_V6: ${{ secrets.ISP_IP_COUNT_V6 }}
+          #DEFAULT_IP_COUNT_V6: ${{ secrets.DEFAULT_IP_COUNT_V6 }}
 
           # IP 测试配置（脚本中已设默认值）
-          TEST_URL_TEMPLATE: ${{ secrets.TEST_URL_TEMPLATE }}
-          EXPECTED_STATUS_CODE: ${{ secrets.EXPECTED_STATUS_CODE }}
-          REQUEST_TIMEOUT: ${{ secrets.REQUEST_TIMEOUT }}
-          MAX_WORKERS: ${{ secrets.MAX_WORKERS }}
-          MAX_RETRY_ATTEMPTS: ${{ secrets.MAX_RETRY_ATTEMPTS }}
+          #TEST_URL_TEMPLATE: ${{ secrets.TEST_URL_TEMPLATE }}
+          #EXPECTED_STATUS_CODE: ${{ secrets.EXPECTED_STATUS_CODE }}
+          #REQUEST_TIMEOUT: ${{ secrets.REQUEST_TIMEOUT }}
+          #MAX_WORKERS: ${{ secrets.MAX_WORKERS }}
+          #MAX_RETRY_ATTEMPTS: ${{ secrets.MAX_RETRY_ATTEMPTS }}
 
           # Telegram 通知（可选）
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
