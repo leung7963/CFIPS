@@ -60,4 +60,4 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
-        run: python dnspod-random.py   # 请将 your_script_name.py 替换为实际脚本文件名
+        run: python -u dnspod-random.py   # 请将 your_script_name.py 替换为实际脚本文件名
