@@ -320,7 +320,7 @@ def distribute_ips(ip_pool: List[str], isp_count: int, default_count: int) -> Di
     if not ip_pool:
         return result
 
-    total_needed = isp_count * 3 + default_count
+    total_needed = isp_count * 4 + default_count
     # 若池子不足，循环复用
     extended = (ip_pool * ((total_needed // len(ip_pool)) + 1))[:total_needed]
     idx = 0
@@ -355,8 +355,8 @@ def main():
     notifier = NotificationManager()
 
     # 计算所需 IP 数量
-    needed_ipv4 = ISP_IP_COUNT * 3 + DEFAULT_IP_COUNT
-    needed_ipv6 = ISP_IP_COUNT_V6 * 3 + DEFAULT_IP_COUNT_V6 if GENERATE_IPV6 else 0
+    needed_ipv4 = ISP_IP_COUNT * 4 + DEFAULT_IP_COUNT
+    needed_ipv6 = ISP_IP_COUNT_V6 * 4 + DEFAULT_IP_COUNT_V6 if GENERATE_IPV6 else 0
 
     print(f"\n目标配置:")
     print(f"  域名: {DOMAIN}")
