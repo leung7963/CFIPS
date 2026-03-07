@@ -1,0 +1,63 @@
+name: 更新 Cloudflare 优选 IP 到腾讯云 DNS
+
+on:
+  schedule:
+    # 每天 UTC 时间 2:00 和 14:00 运行（可根据需要调整）
+    - cron: '0 2,14 * * *'
+  workflow_dispatch:      # 允许手动触发
+
+jobs:
+  update-dns:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v3
+
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests tencentcloud-sdk-python
+          # ipaddress 是 Python 标准库，无需额外安装
+
+      - name: Install Cloudflare WARP
+        run: |
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update && sudo apt-get install -y cloudflare-warp
+          sudo warp-cli --accept-tos registration new
+          sudo warp-cli --accept-tos connect
+
+      - name: 执行 IP 生成与 DNS 更新
+        env:
+          # 必需：腾讯云密钥和域名
+          TENCENT_SECRET_ID: ${{ secrets.TENCENT_SECRET_ID }}
+          TENCENT_SECRET_KEY: ${{ secrets.TENCENT_SECRET_KEY }}
+          DOMAIN: ${{ secrets.DOMAIN }}
+
+          # 可选：主机记录，默认为 @
+          RECORD_NAME: ${{ secrets.RECORD_NAME || '@' }}
+
+          # IP 数量配置（脚本中已设默认值，可根据需要覆盖）
+          ISP_IP_COUNT: ${{ secrets.ISP_IP_COUNT }}
+          DEFAULT_IP_COUNT: ${{ secrets.DEFAULT_IP_COUNT }}
+          GENERATE_IPV6: ${{ secrets.GENERATE_IPV6 }}
+          ISP_IP_COUNT_V6: ${{ secrets.ISP_IP_COUNT_V6 }}
+          DEFAULT_IP_COUNT_V6: ${{ secrets.DEFAULT_IP_COUNT_V6 }}
+
+          # IP 测试配置（脚本中已设默认值）
+          TEST_URL_TEMPLATE: ${{ secrets.TEST_URL_TEMPLATE }}
+          EXPECTED_STATUS_CODE: ${{ secrets.EXPECTED_STATUS_CODE }}
+          REQUEST_TIMEOUT: ${{ secrets.REQUEST_TIMEOUT }}
+          MAX_WORKERS: ${{ secrets.MAX_WORKERS }}
+          MAX_RETRY_ATTEMPTS: ${{ secrets.MAX_RETRY_ATTEMPTS }}
+
+          # Telegram 通知（可选）
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+        run: python dnspod-random.py   # 请将 your_script_name.py 替换为实际脚本文件名
