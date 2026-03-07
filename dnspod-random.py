@@ -48,8 +48,8 @@ MAX_RETRY_ATTEMPTS = int(os.environ.get("MAX_RETRY_ATTEMPTS", "5"))
 GENERATE_IPV6 = os.environ.get("GENERATE_IPV6", "true").lower() == "true"
 
 # 本地 CIDR 文件路径（可自定义）
-IPV4_FILE = os.environ.get("IPV4_FILE", "ipv4.txt")
-IPV6_FILE = os.environ.get("IPV6_FILE", "ipv6.txt")
+IPV4_FILE = os.environ.get("IPV4_FILE", "cfipv4")
+IPV6_FILE = os.environ.get("IPV6_FILE", "cfipv6")
 
 # Telegram 通知配置（可选）
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
