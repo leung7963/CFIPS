@@ -1,9 +1,6 @@
 name: 更新 Cloudflare 优选 IP 到腾讯云 DNS
 
 on:
-  schedule:
-    # 每天 UTC 时间 2:00 和 14:00 运行（可根据需要调整）
-    - cron: '0 2,14 * * *'
   workflow_dispatch:      # 允许手动触发
 
 jobs:
