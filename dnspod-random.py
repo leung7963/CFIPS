@@ -1,3 +1,13 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+Cloudflare 优选 IP 生成器 + 腾讯云 DNS 更新
+- 从本地文件读取 CIDR 列表
+- 随机生成并测试 IP（期望状态码 403 等）
+- 分运营商线路（移动/联通/电信）和默认线路添加 DNS 记录
+"""
+
 import os
 import sys
 import time
@@ -33,9 +43,13 @@ DEFAULT_IP_COUNT_V6 = int(os.environ.get("DEFAULT_IP_COUNT_V6", str(DEFAULT_IP_C
 TEST_URL_TEMPLATE = os.environ.get("TEST_URL_TEMPLATE", "http://{ip}/")
 EXPECTED_STATUS_CODE = int(os.environ.get("EXPECTED_STATUS_CODE", "403"))
 REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "5"))
-MAX_RETRY_ATTEMPTS = int(os.environ.get("MAX_RETRY_ATTEMPTS", "5"))
 MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "10"))
+MAX_RETRY_ATTEMPTS = int(os.environ.get("MAX_RETRY_ATTEMPTS", "5"))
 GENERATE_IPV6 = os.environ.get("GENERATE_IPV6", "true").lower() == "true"
+
+# 本地 CIDR 文件路径（可自定义）
+IPV4_FILE = os.environ.get("IPV4_FILE", "ipv4.txt")
+IPV6_FILE = os.environ.get("IPV6_FILE", "ipv6.txt")
 
 # Telegram 通知配置（可选）
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -49,7 +63,8 @@ LINE_MAP = {
 }
 LINES = ['移动', '联通', '电信']
 
-# ========== IP 生成与测试类（原 CloudflareIPManager）==========
+
+# ========== IP 生成与测试类（从本地文件读取 CIDR）==========
 class CloudflareIPManager:
     def __init__(self):
         self.session = requests.Session()
@@ -58,28 +73,53 @@ class CloudflareIPManager:
         })
 
     def get_cloudflare_ips(self) -> Tuple[List[str], List[str]]:
-        """从 Cloudflare 获取 IPv4 和 IPv6 地址范围"""
-        ipv4_url = "https://raw.githubusercontent.com/leung7963/CFIPS/main/cfipv4"
-        ipv6_url = "https://raw.githubusercontent.com/leung7963/CFIPS/main/cfipv6"
+        """
+        从本地文件读取 IPv4 和 IPv6 CIDR 列表
+        文件格式：每行一个 CIDR，支持以 # 开头的注释和空行
+        """
+        def read_cidrs_from_file(file_path: str, version: int) -> List[str]:
+            """从本地文件读取指定版本的 CIDR，返回有效列表"""
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"本地 CIDR 文件不存在: {file_path}")
 
-        ipv4_cidrs = []
-        ipv6_cidrs = []
+            cidrs = []
+            with open(file_path, 'r', encoding='utf-8') as f:
+                for line_num, line in enumerate(f, 1):
+                    line = line.strip()
+                    # 跳过空行和注释
+                    if not line or line.startswith('#'):
+                        continue
+                    # 校验是否为有效 CIDR 并匹配版本
+                    try:
+                        network = ipaddress.ip_network(line, strict=False)
+                        if network.version != version:
+                            print(f"警告：文件 {file_path} 第 {line_num} 行 {line} 不是 IPv{version} 段，已跳过")
+                            continue
+                        cidrs.append(line)
+                    except ValueError as e:
+                        print(f"警告：文件 {file_path} 第 {line_num} 行 {line} 不是有效 CIDR，已跳过: {e}")
+            if not cidrs:
+                raise ValueError(f"文件 {file_path} 中未找到有效的 IPv{version} CIDR")
+            print(f"从本地文件 {file_path} 读取到 {len(cidrs)} 个 IPv{version} CIDR")
+            return cidrs
 
         try:
-            response = self.session.get(ipv4_url, timeout=10)
-            response.raise_for_status()
-            ipv4_cidrs = [line.strip() for line in response.text.splitlines() if line.strip()]
-            print(f"获取到 {len(ipv4_cidrs)} 个 IPv4 CIDR 范围")
-        except requests.RequestException as e:
-            print(f"获取 IPv4 地址范围失败: {e}")
+            ipv4_cidrs = read_cidrs_from_file(IPV4_FILE, 4)
+        except Exception as e:
+            print(f"读取 IPv4 本地文件失败: {e}")
+            ipv4_cidrs = []   # 若需要备选网络源，可在此添加
 
         try:
-            response = self.session.get(ipv6_url, timeout=10)
-            response.raise_for_status()
-            ipv6_cidrs = [line.strip() for line in response.text.splitlines() if line.strip()]
-            print(f"获取到 {len(ipv6_cidrs)} 个 IPv6 CIDR 范围")
-        except requests.RequestException as e:
-            print(f"获取 IPv6 地址范围失败: {e}")
+            ipv6_cidrs = read_cidrs_from_file(IPV6_FILE, 6)
+        except Exception as e:
+            print(f"读取 IPv6 本地文件失败: {e}")
+            ipv6_cidrs = []
+
+        # 如果生成 IPv6 但文件为空，则报错
+        if not ipv4_cidrs:
+            raise RuntimeError("未能获取任何 IPv4 CIDR，请检查本地文件")
+        if GENERATE_IPV6 and not ipv6_cidrs:
+            raise RuntimeError("未能获取任何 IPv6 CIDR，请检查本地文件")
 
         return ipv4_cidrs, ipv6_cidrs
 
@@ -180,6 +220,7 @@ class CloudflareIPManager:
             print(f"成功生成 {len(qualified)} 个 {cidr_type} IP")
         return qualified
 
+
 # ========== 腾讯云 DNS 操作类 ==========
 class TencentDNSManager:
     def __init__(self, secret_id: str, secret_key: str):
@@ -242,6 +283,7 @@ class TencentDNSManager:
             print(f"添加记录失败: {sub} ({line}) [{record_type}] -> {value}, 错误: {e}")
             return False
 
+
 # ========== 通知类 ==========
 class NotificationManager:
     @staticmethod
@@ -265,6 +307,7 @@ class NotificationManager:
         except Exception as e:
             print(f"保存文件失败 {filename}: {e}")
 
+
 # ========== IP 分配函数 ==========
 def distribute_ips(ip_pool: List[str], isp_count: int, default_count: int) -> Dict[str, List[str]]:
     """
@@ -285,6 +328,7 @@ def distribute_ips(ip_pool: List[str], isp_count: int, default_count: int) -> Di
         idx += isp_count
     result['默认'] = extended[idx:idx + default_count]
     return result
+
 
 # ========== 主函数 ==========
 def main():
@@ -319,6 +363,9 @@ def main():
     print(f"  IPv4: 每运营商 {ISP_IP_COUNT} 个, 默认 {DEFAULT_IP_COUNT} 个 -> 共需 {needed_ipv4} 个")
     if GENERATE_IPV6:
         print(f"  IPv6: 每运营商 {ISP_IP_COUNT_V6} 个, 默认 {DEFAULT_IP_COUNT_V6} 个 -> 共需 {needed_ipv6} 个")
+    print(f"  IPv4 CIDR 文件: {IPV4_FILE}")
+    if GENERATE_IPV6:
+        print(f"  IPv6 CIDR 文件: {IPV6_FILE}")
 
     # 生成 IPv4 合格 IP 池
     ipv4_pool = ip_manager.generate_and_test_ips(needed_ipv4, is_ipv6=False)
@@ -391,6 +438,7 @@ def main():
 
     # 发送 Telegram 通知
     notifier.send_telegram("\n".join(summary))
+
 
 if __name__ == "__main__":
     try:
