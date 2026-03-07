@@ -57,7 +57,7 @@ jobs:
           #MAX_RETRY_ATTEMPTS: ${{ secrets.MAX_RETRY_ATTEMPTS }}
 
           # Telegram 通知（可选）
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.CHAT_ID }}
 
         run: python -u dnspod-random.py   # 请将 your_script_name.py 替换为实际脚本文件名
