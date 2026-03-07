@@ -355,8 +355,8 @@ def main():
     notifier = NotificationManager()
 
     # 计算所需 IP 数量
-    needed_ipv4 = ISP_IP_COUNT * 4 + DEFAULT_IP_COUNT
-    needed_ipv6 = ISP_IP_COUNT_V6 * 4 + DEFAULT_IP_COUNT_V6 if GENERATE_IPV6 else 0
+    needed_ipv4 = ISP_IP_COUNT * 3 + DEFAULT_IP_COUNT
+    needed_ipv6 = ISP_IP_COUNT_V6 * 3 + DEFAULT_IP_COUNT_V6 if GENERATE_IPV6 else 0
 
     print(f"\n目标配置:")
     print(f"  域名: {DOMAIN}")
