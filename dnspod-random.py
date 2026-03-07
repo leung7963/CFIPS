@@ -59,7 +59,7 @@ class CloudflareIPManager:
 
     def get_cloudflare_ips(self) -> Tuple[List[str], List[str]]:
         """从 Cloudflare 获取 IPv4 和 IPv6 地址范围"""
-        ipv4_url = "https://api.cloudflare.com/client/v4/ips"
+        ipv4_url = "https://raw.githubusercontent.com/leung7963/CFIPS/main/cfipv4"
         ipv6_url = "https://raw.githubusercontent.com/leung7963/CFIPS/main/cfipv6"
 
         ipv4_cidrs = []
