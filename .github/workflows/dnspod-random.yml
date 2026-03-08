@@ -1,6 +1,8 @@
 name: 更新 Cloudflare 优选 IP 到腾讯云 DNS
 
 on:
+  schedule:
+    - cron: '10 * * * *'
   workflow_dispatch:      # 允许手动触发
 
 jobs:
@@ -57,4 +59,5 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.CHAT_ID }}
 
-        run: python -u dnspod-random.py   # 请将 your_script_name.py 替换为实际脚本文件名
+        run: python -u dnspod-random.py
+      - uses: leung7963/gh-workflow-keepalive@main
