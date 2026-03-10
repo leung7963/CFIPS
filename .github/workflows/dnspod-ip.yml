@@ -40,3 +40,5 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python dnspod.py
+
+      - uses: leung7963/gh-workflow-keepalive@main
