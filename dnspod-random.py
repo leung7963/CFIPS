@@ -276,7 +276,7 @@ class TencentDNSManager:
             req_add.RecordType = record_type
             req_add.RecordLine = line
             req_add.Value = value
-            req_add.TTL = 86400  # 24 小时
+            req_add.TTL = 60  # 24 小时
             self.client.CreateRecord(req_add)
             print(f"新增记录: {sub} ({line}) [{record_type}] -> {value}")
             return True
