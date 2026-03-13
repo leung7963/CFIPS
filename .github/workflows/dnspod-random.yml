@@ -26,7 +26,25 @@ jobs:
 
       - name: Install Cloudflare WARP
         run: |
-          wget -N https://gitlab.com/fscarmen/warp/-/raw/main/menu.sh && bash menu.sh 6
+          sudo apt-get update
+          sudo apt-get install -y curl gnupg lsb-release wireguard
+          LATEST_WGCF=$(curl -s https://api.github.com/repos/ViRb3/wgcf/releases/latest | grep "browser_download_url.*linux_amd64" | cut -d '"' -f 4)
+          curl -fsSL $LATEST_WGCF -o wgcf
+          sudo mv wgcf /usr/local/bin/wgcf
+          sudo chmod +x /usr/local/bin/wgcf
+          echo | wgcf register --accept-tos
+          wgcf generate
+          sed -i '/^AllowedIPs/c\AllowedIPs = ::/0' wgcf-profile.conf
+          sed -i 's/^Endpoint = .*/Endpoint = 162.159.192.1:2408/' wgcf-profile.conf
+          grep -E '^(AllowedIPs|Endpoint)' wgcf-profile.conf
+          sudo mv wgcf-profile.conf /etc/wireguard/warp.conf
+          sudo wg-quick up warp
+          echo "=== IPv4 (should be runner's original IP) ==="
+          curl -4 --max-time 10 https://ipv4.icanhazip.com
+          echo "=== IPv6 (should show WARP IPv6 address) ==="
+          curl -6 --max-time 10 https://ipv6.icanhazip.com
+          echo "=== WireGuard status ==="
+          sudo wg show
 
       - name: 执行 IP 生成与 DNS 更新
         env:
