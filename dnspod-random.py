@@ -348,7 +348,7 @@ class TencentDNSManager:
             "RecordType": record_type,
             "RecordLine": line,
             "Value": value,
-            "TTL": 86400,
+            "TTL": 600,
             "Weight": weight
         }
         try:
