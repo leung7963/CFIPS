@@ -26,7 +26,7 @@ jobs:
 
       - name: Install Cloudflare WARP
         run: |
-          bash <(curl -fsSL https://raw.githubusercontent.com/P3TERX/warp.sh/main/warp.sh) 6
+          wget -N https://gitlab.com/fscarmen/warp/-/raw/main/menu.sh && bash menu.sh 6
 
       - name: 执行 IP 生成与 DNS 更新
         env:
