@@ -6,24 +6,20 @@ Cloudflare 优选 IP 生成器 + 腾讯云 DNS 更新
 - 从本地文件读取 CIDR 列表
 - 随机生成并测试 IP（期望状态码 403 等）
 - 分运营商线路（移动/联通/电信）和默认线路添加 DNS 记录
-- 每条记录设置权重为 1
+- 每条记录设置权重为 1（通过直接调用 API 实现）
 """
 
 import os
 import sys
 import time
 import random
+import json
+import hashlib
+import hmac
 import ipaddress
 import requests
 import traceback
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Tuple, Optional
-
-# 腾讯云 SDK
-from tencentcloud.common import credential
-from tencentcloud.common.profile.client_profile import ClientProfile
-from tencentcloud.common.profile.http_profile import HttpProfile
-from tencentcloud.dnspod.v20210323 import dnspod_client, models
 
 # ========== 环境变量读取（带默认值）==========
 # 腾讯云配置（必需）
@@ -57,13 +53,75 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 # ========== 常量 ==========
-LINE_MAP = {
-    '移动': '移动',
-    '联通': '联通',
-    '电信': '电信',
-    '境内': '境内'
-}
-LINES = ['移动', '联通', '电信', '境内']
+# 腾讯云支持的线路名称
+LINES = ['移动', '联通', '电信', '默认']
+
+
+# ========== 腾讯云 API 签名函数 ==========
+def sign_v3(service: str, action: str, version: str, payload: dict,
+            secret_id: str, secret_key: str, region: str = "",
+            timestamp: int = None) -> Tuple[dict, str]:
+    """
+    腾讯云 API 3.0 签名
+    返回 (headers, body_string)
+    """
+    if timestamp is None:
+        timestamp = int(time.time())
+
+    http_method = "POST"
+    canonical_uri = "/"
+    canonical_querystring = ""
+    ct = "application/json"
+    canonical_headers = f"content-type:{ct}\nhost:dnspod.tencentcloudapi.com\n"
+    signed_headers = "content-type;host"
+
+    # 请求体 JSON 字符串
+    payload_str = json.dumps(payload, separators=(',', ':'))
+    hashed_payload = hashlib.sha256(payload_str.encode("utf-8")).hexdigest()
+
+    canonical_request = "\n".join([
+        http_method,
+        canonical_uri,
+        canonical_querystring,
+        canonical_headers,
+        signed_headers,
+        hashed_payload
+    ])
+
+    algorithm = "TC3-HMAC-SHA256"
+    date = time.strftime("%Y-%m-%d", time.gmtime(timestamp))
+    credential_scope = f"{date}/{service}/tc3_request"
+    hashed_canonical_request = hashlib.sha256(canonical_request.encode("utf-8")).hexdigest()
+    string_to_sign = "\n".join([
+        algorithm,
+        str(timestamp),
+        credential_scope,
+        hashed_canonical_request
+    ])
+
+    # 派生签名密钥
+    secret_date = hmac.new(
+        ("TC3" + secret_key).encode("utf-8"),
+        date.encode("utf-8"),
+        hashlib.sha256
+    ).digest()
+    secret_service = hmac.new(secret_date, service.encode("utf-8"), hashlib.sha256).digest()
+    secret_signing = hmac.new(secret_service, "tc3_request".encode("utf-8"), hashlib.sha256).digest()
+    signature = hmac.new(secret_signing, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    authorization = (f"{algorithm} Credential={secret_id}/{credential_scope}, "
+                     f"SignedHeaders={signed_headers}, Signature={signature}")
+
+    headers = {
+        "Authorization": authorization,
+        "Content-Type": ct,
+        "Host": "dnspod.tencentcloudapi.com",
+        "X-TC-Action": action,
+        "X-TC-Version": version,
+        "X-TC-Timestamp": str(timestamp),
+        "X-TC-Region": region,
+    }
+    return headers, payload_str
 
 
 # ========== IP 生成与测试类（从本地文件读取 CIDR）==========
@@ -223,67 +281,87 @@ class CloudflareIPManager:
         return qualified
 
 
-# ========== 腾讯云 DNS 操作类 ==========
+# ========== 腾讯云 DNS 操作类（直接调用 API）==========
 class TencentDNSManager:
     def __init__(self, secret_id: str, secret_key: str):
         self.secret_id = secret_id
         self.secret_key = secret_key
-        self._client = None
+        self.session = requests.Session()
+        self.base_url = "https://dnspod.tencentcloudapi.com"
+        self.service = "dnspod"
+        self.version = "2021-03-23"  # DNSPod API 版本
 
-    @property
-    def client(self):
-        if self._client is None:
-            cred = credential.Credential(self.secret_id, self.secret_key)
-            httpProfile = HttpProfile()
-            httpProfile.endpoint = "dnspod.tencentcloudapi.com"
-            clientProfile = ClientProfile()
-            clientProfile.httpProfile = httpProfile
-            self._client = dnspod_client.DnspodClient(cred, "", clientProfile)
-        return self._client
+    def _call_api(self, action: str, payload: dict) -> dict:
+        """调用腾讯云 API 并返回响应 JSON"""
+        headers, body = sign_v3(
+            service=self.service,
+            action=action,
+            version=self.version,
+            payload=payload,
+            secret_id=self.secret_id,
+            secret_key=self.secret_key
+        )
+        resp = self.session.post(self.base_url, headers=headers, data=body, timeout=10)
+        resp.raise_for_status()
+        return resp.json()
 
     def delete_records_by_type(self, domain: str, sub: str, record_type: str) -> int:
-        """删除指定类型的所有记录，返回删除数量"""
+        """
+        删除指定类型的所有记录，返回删除数量
+        通过 DescribeRecordList 获取记录列表，然后逐个删除
+        """
+        deleted = 0
         try:
-            req_list = models.DescribeRecordListRequest()
-            req_list.Domain = domain
-            req_list.Subdomain = sub
-            resp = self.client.DescribeRecordList(req_list)
+            # 获取记录列表
+            list_payload = {
+                "Domain": domain,
+                "Subdomain": sub
+            }
+            list_resp = self._call_api("DescribeRecordList", list_payload)
+            records = list_resp.get("Response", {}).get("RecordList", [])
+            if not records:
+                print(f"未找到 {sub} 的 {record_type} 记录")
+                return 0
 
-            deleted = 0
-            for record in resp.RecordList:
-                if record.Name == sub and record.Type == record_type:
-                    req_del = models.DeleteRecordRequest()
-                    req_del.Domain = domain
-                    req_del.RecordId = record.RecordId
-                    self.client.DeleteRecord(req_del)
-                    print(f"删除记录: {sub} ({record.Line}) [{record.Type}] -> {record.Value}")
+            for record in records:
+                if record.get("Name") == sub and record.get("Type") == record_type:
+                    record_id = record.get("RecordId")
+                    del_payload = {
+                        "Domain": domain,
+                        "RecordId": record_id
+                    }
+                    self._call_api("DeleteRecord", del_payload)
+                    print(f"删除记录: {sub} ({record.get('Line')}) [{record_type}] -> {record.get('Value')}")
                     deleted += 1
 
-            if deleted == 0:
-                print(f"未找到 {sub} 的 {record_type} 记录")
-            else:
-                print(f"共删除 {deleted} 条 {record_type} 记录")
+            print(f"共删除 {deleted} 条 {record_type} 记录")
             return deleted
         except Exception as e:
             print(f"删除记录失败: {e}")
             return 0
 
     def add_record(self, domain: str, sub: str, record_type: str, line: str, value: str, weight: int = 1) -> bool:
-        """添加单条解析记录，可指定权重（默认1）"""
+        """添加单条解析记录，支持设置权重"""
+        payload = {
+            "Domain": domain,
+            "SubDomain": sub,
+            "RecordType": record_type,
+            "RecordLine": line,
+            "Value": value,
+            "TTL": 86400,
+            "Weight": weight
+        }
         try:
-            req_add = models.CreateRecordRequest()
-            req_add.Domain = domain
-            req_add.SubDomain = sub
-            req_add.RecordType = record_type
-            req_add.RecordLine = line
-            req_add.Value = value
-            req_add.TTL = 86400  # 24 小时
-            req_add.RecordLineWeight = weight   # 设置权重
-            self.client.CreateRecord(req_add)
-            print(f"新增记录: {sub} ({line}) [{record_type}] 权重={weight} -> {value}")
-            return True
+            resp = self._call_api("CreateRecord", payload)
+            if "Response" in resp and "Error" not in resp["Response"]:
+                print(f"新增记录成功: {sub} ({line}) [{record_type}] 权重={weight} -> {value}")
+                return True
+            else:
+                error = resp.get("Response", {}).get("Error", {}).get("Message", "未知错误")
+                print(f"新增记录失败: {error}")
+                return False
         except Exception as e:
-            print(f"添加记录失败: {sub} ({line}) [{record_type}] -> {value}, 错误: {e}")
+            print(f"添加记录异常: {e}")
             return False
 
 
@@ -318,17 +396,18 @@ def distribute_ips(ip_pool: List[str], isp_count: int, default_count: int) -> Di
     返回: {'移动':[...], '联通':[...], '电信':[...], '默认':[...]}
     """
     result = {line: [] for line in LINES}
-    result['默认'] = []
     if not ip_pool:
         return result
 
-    total_needed = isp_count * 4 + default_count
+    total_needed = isp_count * 3 + default_count  # 移动、联通、电信 + 默认
     # 若池子不足，循环复用
     extended = (ip_pool * ((total_needed // len(ip_pool)) + 1))[:total_needed]
     idx = 0
-    for line in LINES:
+    # 分配移动、联通、电信
+    for line in ['移动', '联通', '电信']:
         result[line] = extended[idx:idx + isp_count]
         idx += isp_count
+    # 分配默认
     result['默认'] = extended[idx:idx + default_count]
     return result
 
@@ -357,15 +436,15 @@ def main():
     notifier = NotificationManager()
 
     # 计算所需 IP 数量
-    needed_ipv4 = ISP_IP_COUNT * 4 + DEFAULT_IP_COUNT
-    needed_ipv6 = ISP_IP_COUNT_V6 * 4 + DEFAULT_IP_COUNT_V6 if GENERATE_IPV6 else 0
+    needed_ipv4 = ISP_IP_COUNT * 3 + DEFAULT_IP_COUNT  # 移动、联通、电信 + 默认
+    needed_ipv6 = ISP_IP_COUNT_V6 * 3 + DEFAULT_IP_COUNT_V6 if GENERATE_IPV6 else 0
 
     print(f"\n目标配置:")
     print(f"  域名: {DOMAIN}")
     print(f"  主机记录: {RECORD_NAME}")
-    print(f"  IPv4: 每运营商 {ISP_IP_COUNT} 个, 默认 {DEFAULT_IP_COUNT} 个 -> 共需 {needed_ipv4} 个")
+    print(f"  IPv4: 移动/联通/电信 各 {ISP_IP_COUNT} 个, 默认 {DEFAULT_IP_COUNT} 个 -> 共需 {needed_ipv4} 个")
     if GENERATE_IPV6:
-        print(f"  IPv6: 每运营商 {ISP_IP_COUNT_V6} 个, 默认 {DEFAULT_IP_COUNT_V6} 个 -> 共需 {needed_ipv6} 个")
+        print(f"  IPv6: 移动/联通/电信 各 {ISP_IP_COUNT_V6} 个, 默认 {DEFAULT_IP_COUNT_V6} 个 -> 共需 {needed_ipv6} 个")
     print(f"  IPv4 CIDR 文件: {IPV4_FILE}")
     if GENERATE_IPV6:
         print(f"  IPv6 CIDR 文件: {IPV6_FILE}")
