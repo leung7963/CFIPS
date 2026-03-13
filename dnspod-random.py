@@ -6,6 +6,7 @@ Cloudflare 优选 IP 生成器 + 腾讯云 DNS 更新
 - 从本地文件读取 CIDR 列表
 - 随机生成并测试 IP（期望状态码 403 等）
 - 分运营商线路（移动/联通/电信）和默认线路添加 DNS 记录
+- 每条记录设置权重为 1
 """
 
 import os
@@ -267,8 +268,8 @@ class TencentDNSManager:
             print(f"删除记录失败: {e}")
             return 0
 
-    def add_record(self, domain: str, sub: str, record_type: str, line: str, value: str) -> bool:
-        """添加单条解析记录"""
+    def add_record(self, domain: str, sub: str, record_type: str, line: str, value: str, weight: int = 1) -> bool:
+        """添加单条解析记录，可指定权重（默认1）"""
         try:
             req_add = models.CreateRecordRequest()
             req_add.Domain = domain
@@ -277,8 +278,9 @@ class TencentDNSManager:
             req_add.RecordLine = line
             req_add.Value = value
             req_add.TTL = 86400  # 24 小时
+            req_add.RecordLineWeight = weight   # 设置权重
             self.client.CreateRecord(req_add)
-            print(f"新增记录: {sub} ({line}) [{record_type}] -> {value}")
+            print(f"新增记录: {sub} ({line}) [{record_type}] 权重={weight} -> {value}")
             return True
         except Exception as e:
             print(f"添加记录失败: {sub} ({line}) [{record_type}] -> {value}, 错误: {e}")
