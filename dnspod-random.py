@@ -340,7 +340,7 @@ class TencentDNSManager:
             print(f"删除记录失败: {e}")
             return 0
 
-    def add_record(self, domain: str, sub: str, record_type: str, line: str, value: str, weight: int = 10) -> bool:
+    def add_record(self, domain: str, sub: str, record_type: str, line: str, value: str, weight: int = 1) -> bool:
         """添加单条解析记录，支持设置权重"""
         payload = {
             "Domain": domain,
