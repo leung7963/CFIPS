@@ -42,7 +42,7 @@ TEST_URL_TEMPLATE = os.environ.get("TEST_URL_TEMPLATE", "http://{ip}/")
 EXPECTED_STATUS_CODE = int(os.environ.get("EXPECTED_STATUS_CODE", "403"))
 REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "5"))
 # 并发测试线程数，修改为 100
-MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "1000"))
+MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "200"))
 # 每一个生成任务的最大尝试倍数（生成 N 个 IP，最多尝试 N * MULTIPLIER 次）
 ATTEMPT_MULTIPLIER = int(os.environ.get("ATTEMPT_MULTIPLIER", "10000"))
 GENERATE_IPV6 = os.environ.get("GENERATE_IPV6", "true").lower() == "true"
