@@ -3,10 +3,10 @@
 
 """
 Cloudflare 优选 IP 生成器 + 腾讯云 DNS 更新
-- 从本地文件读取 CIDR 列表
-- 随机生成并测试 IP（期望状态码 403 等）
+- 从 Cloudflare 官网动态获取 CIDR 列表
+- 随机生成 IP 并进行高并发测试（期望状态码 403 等）
 - 分运营商线路（移动/联通/电信）和默认线路添加 DNS 记录
-- 每条记录设置权重为 1（通过直接调用 API 实现）
+- 每条记录设置权重为 1
 """
 
 import os
@@ -20,6 +20,7 @@ import ipaddress
 import requests
 import traceback
 from typing import List, Dict, Tuple, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ========== 环境变量读取（带默认值）==========
 # 腾讯云配置（必需）
@@ -40,13 +41,15 @@ DEFAULT_IP_COUNT_V6 = int(os.environ.get("DEFAULT_IP_COUNT_V6", str(DEFAULT_IP_C
 TEST_URL_TEMPLATE = os.environ.get("TEST_URL_TEMPLATE", "http://{ip}/")
 EXPECTED_STATUS_CODE = int(os.environ.get("EXPECTED_STATUS_CODE", "403"))
 REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "5"))
-MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "10"))
-MAX_RETRY_ATTEMPTS = int(os.environ.get("MAX_RETRY_ATTEMPTS", "5"))
+# 并发测试线程数，修改为 100
+MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "100"))
+# 每一个生成任务的最大尝试倍数（生成 N 个 IP，最多尝试 N * MULTIPLIER 次）
+ATTEMPT_MULTIPLIER = int(os.environ.get("ATTEMPT_MULTIPLIER", "15"))
 GENERATE_IPV6 = os.environ.get("GENERATE_IPV6", "true").lower() == "true"
 
-# 本地 CIDR 文件路径（可自定义）
-IPV4_FILE = os.environ.get("IPV4_FILE", "cfipv4")
-IPV6_FILE = os.environ.get("IPV6_FILE", "cfipv6")
+# Cloudflare CIDR 官方源
+CF_IPV4_URL = "https://www.cloudflare.com/ips-v4"
+CF_IPV6_URL = "https://www.cloudflare.com/ips-v6"
 
 # Telegram 通知配置（可选）
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -124,81 +127,80 @@ def sign_v3(service: str, action: str, version: str, payload: dict,
     return headers, payload_str
 
 
-# ========== IP 生成与测试类（从本地文件读取 CIDR）==========
+# ========== IP 管理类（在线获取 CIDR + 多线程测试）==========
 class CloudflareIPManager:
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         })
+        self._ipv4_cidrs = []
+        self._ipv6_cidrs = []
 
-    def get_cloudflare_ips(self) -> Tuple[List[str], List[str]]:
+    def fetch_cloudflare_ips(self) -> bool:
         """
-        从本地文件读取 IPv4 和 IPv6 CIDR 列表
-        文件格式：每行一个 CIDR，支持以 # 开头的注释和空行
+        从 Cloudflare 官网动态获取 IPv4 和 IPv6 CIDR 列表
         """
-        def read_cidrs_from_file(file_path: str, version: int) -> List[str]:
-            """从本地文件读取指定版本的 CIDR，返回有效列表"""
-            if not os.path.exists(file_path):
-                raise FileNotFoundError(f"本地 CIDR 文件不存在: {file_path}")
-
-            cidrs = []
-            with open(file_path, 'r', encoding='utf-8') as f:
-                for line_num, line in enumerate(f, 1):
+        def get_cidrs(url: str, version: int) -> List[str]:
+            print(f"正在从 {url} 获取 IPv{version} CIDR...")
+            try:
+                response = self.session.get(url, timeout=15)
+                response.raise_for_status()
+                text = response.text.strip()
+                cidrs = []
+                for line in text.splitlines():
                     line = line.strip()
-                    # 跳过空行和注释
-                    if not line or line.startswith('#'):
-                        continue
-                    # 校验是否为有效 CIDR 并匹配版本
+                    if not line: continue
                     try:
+                        # 校验 CIDR
                         network = ipaddress.ip_network(line, strict=False)
-                        if network.version != version:
-                            print(f"警告：文件 {file_path} 第 {line_num} 行 {line} 不是 IPv{version} 段，已跳过")
-                            continue
-                        cidrs.append(line)
-                    except ValueError as e:
-                        print(f"警告：文件 {file_path} 第 {line_num} 行 {line} 不是有效 CIDR，已跳过: {e}")
-            if not cidrs:
-                raise ValueError(f"文件 {file_path} 中未找到有效的 IPv{version} CIDR")
-            print(f"从本地文件 {file_path} 读取到 {len(cidrs)} 个 IPv{version} CIDR")
-            return cidrs
+                        if network.version == version:
+                            cidrs.append(line)
+                    except ValueError:
+                        print(f"警告: 无效的 CIDR: {line}")
+                if not cidrs:
+                    print(f"错误: 从 {url} 未获取到有效的 IPv{version} CIDR")
+                else:
+                    print(f"成功获取 {len(cidrs)} 个 IPv{version} CIDR")
+                return cidrs
+            except Exception as e:
+                print(f"获取 IPv{version} CIDR 失败: {e}")
+                return []
 
-        try:
-            ipv4_cidrs = read_cidrs_from_file(IPV4_FILE, 4)
-        except Exception as e:
-            print(f"读取 IPv4 本地文件失败: {e}")
-            ipv4_cidrs = []   # 若需要备选网络源，可在此添加
+        self._ipv4_cidrs = get_cidrs(CF_IPV4_URL, 4)
+        if GENERATE_IPV6:
+            self._ipv6_cidrs = get_cidrs(CF_IPV6_URL, 6)
 
-        try:
-            ipv6_cidrs = read_cidrs_from_file(IPV6_FILE, 6)
-        except Exception as e:
-            print(f"读取 IPv6 本地文件失败: {e}")
-            ipv6_cidrs = []
+        # 校验结果
+        if not self._ipv4_cidrs:
+            print("致命错误: 无法获取 IPv4 CIDR 列表。")
+            return False
+        if GENERATE_IPV6 and not self._ipv6_cidrs:
+            print("警告: 开启了 IPv6 生成但未获取到 IPv6 CIDR。")
+            # 视情况决定是否终止，这里选择允许仅 IPv4 运行
 
-        # 如果生成 IPv6 但文件为空，则报错
-        if not ipv4_cidrs:
-            raise RuntimeError("未能获取任何 IPv4 CIDR，请检查本地文件")
-        if GENERATE_IPV6 and not ipv6_cidrs:
-            raise RuntimeError("未能获取任何 IPv6 CIDR，请检查本地文件")
+        return True
 
-        return ipv4_cidrs, ipv6_cidrs
+    def get_cidrs_by_version(self, is_ipv6: bool) -> List[str]:
+        return self._ipv6_cidrs if is_ipv6 else self._ipv4_cidrs
 
     def generate_random_ip_from_cidr(self, cidr: str, is_ipv6: bool = False) -> Optional[str]:
         """从 CIDR 范围内生成随机 IP 地址"""
         try:
             network = ipaddress.ip_network(cidr, strict=False)
-            if is_ipv6 and network.version != 6:
-                return None
-            if not is_ipv6 and network.version != 4:
-                return None
+            # 再次确认版本
+            if is_ipv6 and network.version != 6: return None
+            if not is_ipv6 and network.version != 4: return None
 
             net_int = int(network.network_address)
             bcast_int = int(network.broadcast_address)
 
+            # 避免生成网络地址和广播地址（对 IPv4 /31,/32 和 IPv6 /127,/128 特殊处理）
             if network.prefixlen <= (126 if is_ipv6 else 30):
                 start = net_int + 1
                 end = bcast_int - 1
             else:
+                # 非常小的子网，直接在范围内生成
                 start = net_int
                 end = bcast_int
 
@@ -209,76 +211,130 @@ class CloudflareIPManager:
         except Exception:
             return None
 
-    def test_ip_status(self, ip_address: str) -> Tuple[bool, int, str]:
-        """测试 IP 是否返回期望状态码"""
+    def test_ip_worker(self, ip_address: str) -> Tuple[str, bool, int]:
+        """
+        单条 IP 测试函数，供线程池调用
+        返回: (ip, structure_ok, status_code)
+        """
+        # 专门为测试创建 Session，避免多线程共享 Session 带来的潜在 TTL/连接池问题
+        # 但在极高并发下，频繁创建 Session 可能导致本地端口耗尽，
+        # 这里使用全局 session 但配合 requests 的连接池管理。
+        # 实际上，requests.Session 是线程安全的，可以直接用。
+        
         try:
-            # 判断是否为 IPv6
-            try:
-                ip_obj = ipaddress.ip_address(ip_address)
-                is_ipv6 = (ip_obj.version == 6)
-            except ValueError:
-                is_ipv6 = ':' in ip_address
-
+            # 判断是否为 IPv6 以便正确组装 URL
+            is_ipv6 = ':' in ip_address
             if is_ipv6:
                 test_url = TEST_URL_TEMPLATE.format(ip=f"[{ip_address}]")
             else:
                 test_url = TEST_URL_TEMPLATE.format(ip=ip_address)
 
-            response = self.session.get(test_url, timeout=REQUEST_TIMEOUT, allow_redirects=False)
+            # 使用全局 session 发起请求
+            response = self.session.get(test_url, timeout=REQUEST_TIMEOUT, allow_redirects=False, verify=False)
             status_code = response.status_code
-            print(f"测试 IP {ip_address}: 状态码 {status_code}")
-            return (status_code == EXPECTED_STATUS_CODE), status_code, response.reason
-        except requests.exceptions.Timeout:
-            print(f"测试 IP {ip_address}: 请求超时")
-            return False, 0, "Timeout"
-        except requests.exceptions.ConnectionError:
-            print(f"测试 IP {ip_address}: 连接错误")
-            return False, 0, "Connection Error"
-        except Exception as e:
-            print(f"测试 IP {ip_address}: 异常 {e}")
-            return False, 0, str(e)
+            return ip_address, (status_code == EXPECTED_STATUS_CODE), status_code
+        except requests.exceptions.RequestException:
+            # 涵盖 Timeout, ConnectionError 等
+            return ip_address, False, 0
+        except Exception:
+            return ip_address, False, -1
 
-    def generate_and_test_ips(self, num_ips: int, is_ipv6: bool = False) -> List[str]:
-        """生成并测试指定数量的合格 IP"""
+    def generate_and_test_ips_concurrent(self, num_ips: int, is_ipv6: bool = False) -> List[str]:
+        """并发生成并测试指定数量的合格 IP"""
         if num_ips <= 0:
             return []
 
         cidr_type = "IPv6" if is_ipv6 else "IPv4"
-        print(f"\n开始生成 {num_ips} 个 {cidr_type} 合格 IP...")
+        print(f"\n开始并发生成 {num_ips} 个 {cidr_type} 合格 IP (最大线程: {MAX_WORKERS})...")
 
-        ipv4_cidrs, ipv6_cidrs = self.get_cloudflare_ips()
-        cidrs = ipv6_cidrs if is_ipv6 else ipv4_cidrs
+        cidrs = self.get_cidrs_by_version(is_ipv6)
         if not cidrs:
-            print(f"错误：无法获取 {cidr_type} CIDR 范围")
+            print(f"错误：无有效的 {cidr_type} CIDR 范围，跳过生成")
             return []
 
-        qualified = []
-        attempted = set()
-        total_attempts = 0
-        max_attempts = num_ips * 15  # 最多尝试 15 倍数量
+        qualified_ips = []
+        attempted_ips = set()
+        
+        # 目标是寻找 num_ips 个，但为了并发，我们需要一次性投递更多任务
+        # 预估合格率，投递任务
+        max_total_attempts = num_ips * ATTEMPT_MULTIPLIER
+        
+        print(f"计划寻找 {num_ips} 个 IP，最大尝试 {max_total_attempts} 次...")
 
-        while len(qualified) < num_ips and total_attempts < max_attempts:
-            cidr = random.choice(cidrs)
-            ip = self.generate_random_ip_from_cidr(cidr, is_ipv6)
-            if not ip or ip in attempted:
-                total_attempts += 1
-                continue
+        # 使用线程池
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            future_to_ip = {}
+            
+            # 初始投递批量任务
+            batch_size = max(MAX_WORKERS * 2, num_ips * 2)
+            
+            # 内部函数：生成并投递一个新 IP 测试任务
+            def submit_new_ip():
+                nonlocal max_total_attempts
+                if max_total_attempts <= 0:
+                    return False
+                
+                # 尝试生成一个未测试过的 IP
+                ip = None
+                for _ in range(10): # 内部重试生成
+                    cidr = random.choice(cidrs)
+                    generated_ip = self.generate_random_ip_from_cidr(cidr, is_ipv6)
+                    if generated_ip and generated_ip not in attempted_ips:
+                        ip = generated_ip
+                        break
+                
+                if ip:
+                    attempted_ips.add(ip)
+                    max_total_attempts -= 1
+                    future = executor.submit(self.test_ip_worker, ip)
+                    future_to_ip[future] = ip
+                    return True
+                return False
 
-            ok, code, _ = self.test_ip_status(ip)
-            attempted.add(ip)
-            total_attempts += 1
+            # 初始填充任务队列
+            for _ in range(min(batch_size, max_total_attempts)):
+                if not submit_new_ip(): break
 
-            if ok:
-                qualified.append(ip)
-                print(f"✓ 已找到 {len(qualified)}/{num_ips}: {ip}")
-            else:
-                print(f"✗ 不合格 {ip} (状态码 {code})")
+            # 处理结果并动态补充任务
+            while future_to_ip and len(qualified_ips) < num_ips:
+                # 获取已完成的任务
+                for future in as_completed(future_to_ip):
+                    ip = future_to_ip.pop(future)
+                    
+                    try:
+                        tested_ip, is_ok, code = future.result()
+                        if is_ok:
+                            # 再次检查，防止多线程下刚好同时合格
+                            if tested_ip not in qualified_ips:
+                                qualified_ips.append(tested_ip)
+                                print(f"✓ 已找到 {len(qualified_ips)}/{num_ips}: {tested_ip}")
+                                
+                                # 如果找够了，停止补充任务
+                                if len(qualified_ips) >= num_ips:
+                                    break
+                        else:
+                            # 可选：打印不合格详情
+                            # print(f"✗ 不合格 {tested_ip} ({code})")
+                            pass
+                            
+                    except Exception as e:
+                        print(f"处理测试结果时异常 ({ip}): {e}")
 
-        if len(qualified) < num_ips:
-            print(f"警告：仅找到 {len(qualified)} 个 {cidr_type} 合格 IP，目标 {num_ips}")
+                    # 只要还没找够，且还有尝试机会，就补充一个新任务
+                    if len(qualified_ips) < num_ips:
+                        if not submit_new_ip():
+                            # 无法生成新 IP 或达到最大尝试，且队列已空，则退出
+                            if not future_to_ip:
+                                break
+                    else:
+                        break # 找够了，退出 for 循环
+
+        if len(qualified_ips) < num_ips:
+            print(f"警告：仅找到 {len(qualified_ips)} 个 {cidr_type} 合格 IP，目标 {num_ips} (尝试次数耗尽)")
         else:
-            print(f"成功生成 {len(qualified)} 个 {cidr_type} IP")
-        return qualified
+            print(f"成功生成 {len(qualified_ips)} 个 {cidr_type} IP")
+            
+        return qualified_ips
 
 
 # ========== 腾讯云 DNS 操作类（直接调用 API）==========
@@ -306,10 +362,7 @@ class TencentDNSManager:
         return resp.json()
 
     def delete_records_by_type(self, domain: str, sub: str, record_type: str) -> int:
-        """
-        删除指定类型的所有记录，返回删除数量
-        通过 DescribeRecordList 获取记录列表，然后逐个删除
-        """
+        """删除指定类型的所有记录，返回删除数量"""
         deleted = 0
         try:
             # 获取记录列表
@@ -324,6 +377,7 @@ class TencentDNSManager:
                 return 0
 
             for record in records:
+                # 腾讯云 Name 为主机记录，Value 为记录值
                 if record.get("Name") == sub and record.get("Type") == record_type:
                     record_id = record.get("RecordId")
                     del_payload = {
@@ -348,7 +402,7 @@ class TencentDNSManager:
             "RecordType": record_type,
             "RecordLine": line,
             "Value": value,
-            "TTL": 86400,
+            "TTL": 600, # TTL 调小一点
             "Weight": weight
         }
         try:
@@ -358,14 +412,14 @@ class TencentDNSManager:
                 return True
             else:
                 error = resp.get("Response", {}).get("Error", {}).get("Message", "未知错误")
-                print(f"新增记录失败: {error}")
+                print(f"新增记录失败: {sub} -> {value}, 错误: {error}")
                 return False
         except Exception as e:
             print(f"添加记录异常: {e}")
             return False
 
 
-# ========== 通知类 ==========
+# ========== 通知与保存类 ==========
 class NotificationManager:
     @staticmethod
     def send_telegram(text: str):
@@ -380,11 +434,12 @@ class NotificationManager:
 
     @staticmethod
     def save_to_file(ip_list: List[str], filename: str):
+        if not ip_list: return
         try:
             with open(filename, 'w', encoding='utf-8') as f:
                 for ip in ip_list:
                     f.write(ip + '\n')
-            print(f"IP 已保存到 {filename}")
+            print(f"IP 已保存到本地文件: {filename}")
         except Exception as e:
             print(f"保存文件失败 {filename}: {e}")
 
@@ -400,8 +455,11 @@ def distribute_ips(ip_pool: List[str], isp_count: int, default_count: int) -> Di
         return result
 
     total_needed = isp_count * 3 + default_count  # 移动、联通、电信 + 默认
-    # 若池子不足，循环复用
-    extended = (ip_pool * ((total_needed // len(ip_pool)) + 1))[:total_needed]
+    
+    # 若池子不足，循环复用池子中的 IP
+    pool_size = len(ip_pool)
+    extended = [ip_pool[i % pool_size] for i in range(total_needed)]
+    
     idx = 0
     # 分配移动、联通、电信
     for line in ['移动', '联通', '电信']:
@@ -414,26 +472,32 @@ def distribute_ips(ip_pool: List[str], isp_count: int, default_count: int) -> Di
 
 # ========== 主函数 ==========
 def main():
+    # 忽略 SSL 警告（因为直接用 IP 访问 HTTP 可能会有证书问题，虽然我们只看状态码）
+    requests.packages.urllib3.disable_warnings()
+
     print("=" * 60)
-    print("Cloudflare 优选 IP 生成器 + 腾讯云 DNS 更新")
+    print("Cloudflare 优选 IP 生成器 + 腾讯云 DNS 更新 (在线 CIDR + 100并发)")
     print("=" * 60)
 
     # 检查必要环境变量
     missing = []
-    if not TENCENT_SECRET_ID:
-        missing.append("TENCENT_SECRET_ID")
-    if not TENCENT_SECRET_KEY:
-        missing.append("TENCENT_SECRET_KEY")
-    if not DOMAIN:
-        missing.append("DOMAIN")
+    if not TENCENT_SECRET_ID: missing.append("TENCENT_SECRET_ID")
+    if not TENCENT_SECRET_KEY: missing.append("TENCENT_SECRET_KEY")
+    if not DOMAIN: missing.append("DOMAIN")
     if missing:
         print(f"错误：缺少必要环境变量: {', '.join(missing)}")
+        print("请设置 TENCENT_SECRET_ID, TENCENT_SECRET_KEY, DOMAIN")
         sys.exit(1)
 
     # 初始化管理器
     ip_manager = CloudflareIPManager()
     dns_manager = TencentDNSManager(TENCENT_SECRET_ID, TENCENT_SECRET_KEY)
     notifier = NotificationManager()
+
+    # 1. 在线获取 Cloudflare CIDR
+    if not ip_manager.fetch_cloudflare_ips():
+        print("致命错误：无法获取 Cloudflare IP 范围，程序退出。")
+        sys.exit(1)
 
     # 计算所需 IP 数量
     needed_ipv4 = ISP_IP_COUNT * 3 + DEFAULT_IP_COUNT  # 移动、联通、电信 + 默认
@@ -442,40 +506,38 @@ def main():
     print(f"\n目标配置:")
     print(f"  域名: {DOMAIN}")
     print(f"  主机记录: {RECORD_NAME}")
-    print(f"  IPv4: 移动/联通/电信 各 {ISP_IP_COUNT} 个, 默认 {DEFAULT_IP_COUNT} 个 -> 共需 {needed_ipv4} 个")
+    print(f"  IPv4: 移动/联通/电信 各 {ISP_IP_COUNT} 个, 默认 {DEFAULT_IP_COUNT} 个 -> 共需优选 {needed_ipv4} 个")
     if GENERATE_IPV6:
-        print(f"  IPv6: 移动/联通/电信 各 {ISP_IP_COUNT_V6} 个, 默认 {DEFAULT_IP_COUNT_V6} 个 -> 共需 {needed_ipv6} 个")
-    print(f"  IPv4 CIDR 文件: {IPV4_FILE}")
-    if GENERATE_IPV6:
-        print(f"  IPv6 CIDR 文件: {IPV6_FILE}")
+        print(f"  IPv6: 移动/联通/电信 各 {ISP_IP_COUNT_V6} 个, 默认 {DEFAULT_IP_COUNT_V6} 个 -> 共需优选 {needed_ipv6} 个")
+    print(f"  测试 URL 模板: {TEST_URL_TEMPLATE}")
+    print(f"  期望状态码: {EXPECTED_STATUS_CODE}")
 
-    # 生成 IPv4 合格 IP 池
-    ipv4_pool = ip_manager.generate_and_test_ips(needed_ipv4, is_ipv6=False)
+    # 2. 并发生成 IPv4 合格 IP 池
+    ipv4_pool = ip_manager.generate_and_test_ips_concurrent(needed_ipv4, is_ipv6=False)
 
-    # 生成 IPv6 合格 IP 池
+    # 3. 并发生成 IPv6 合格 IP 池
     ipv6_pool = []
     if GENERATE_IPV6 and needed_ipv6 > 0:
-        ipv6_pool = ip_manager.generate_and_test_ips(needed_ipv6, is_ipv6=True)
+        ipv6_pool = ip_manager.generate_and_test_ips_concurrent(needed_ipv6, is_ipv6=True)
 
-    # 保存到文件（可选）
-    if ipv4_pool:
-        notifier.save_to_file(ipv4_pool, "cfip.txt")
-    if ipv6_pool:
-        notifier.save_to_file(ipv6_pool, "cfipv6.txt")
+    # 保存结果到文件（可选）
+    notifier.save_to_file(ipv4_pool, "cfip_v4.txt")
+    notifier.save_to_file(ipv6_pool, "cfip_v6.txt")
 
     # 准备通知内容
+    current_time = time.strftime('%Y-%m-%d %H:%M:%S')
     summary = [
-        f"<b>Cloudflare 优选 IP 更新</b>",
+        f"<b>Cloudflare 优选 IP 更新报告</b>",
         f"域名: {DOMAIN}",
         f"记录: {RECORD_NAME}",
-        f"时间: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"时间: {current_time}",
         f"",
-        f"IPv4 合格数量: {len(ipv4_pool)} (需求 {needed_ipv4})",
+        f"IPv4 池: {len(ipv4_pool)}/{needed_ipv4}",
     ]
     if GENERATE_IPV6:
-        summary.append(f"IPv6 合格数量: {len(ipv6_pool)} (需求 {needed_ipv6})")
+        summary.append(f"IPv6 池: {len(ipv6_pool)}/{needed_ipv6}")
 
-    # 更新 DNS 记录
+    # 4. 更新 DNS 记录
     print("\n开始更新腾讯云 DNS...")
     total_added = 0
     total_deleted = 0
@@ -483,43 +545,50 @@ def main():
     # 处理 IPv4 (A 记录)
     if ipv4_pool:
         print("\n--- 处理 IPv4 A 记录 ---")
+        # 先删除旧记录
         deleted = dns_manager.delete_records_by_type(DOMAIN, RECORD_NAME, 'A')
         total_deleted += deleted
 
+        # 分配并添加新记录
         distribution = distribute_ips(ipv4_pool, ISP_IP_COUNT, DEFAULT_IP_COUNT)
         for line, ips in distribution.items():
             for ip in ips:
                 if dns_manager.add_record(DOMAIN, RECORD_NAME, 'A', line, ip):
                     total_added += 1
     else:
-        print("IPv4 池为空，跳过更新")
+        print("警告: IPv4 池为空，跳过 A 记录更新")
 
     # 处理 IPv6 (AAAA 记录)
     if ipv6_pool:
         print("\n--- 处理 IPv6 AAAA 记录 ---")
+        # 先删除旧记录
         deleted = dns_manager.delete_records_by_type(DOMAIN, RECORD_NAME, 'AAAA')
         total_deleted += deleted
 
+        # 分配并添加新记录
         distribution = distribute_ips(ipv6_pool, ISP_IP_COUNT_V6, DEFAULT_IP_COUNT_V6)
         for line, ips in distribution.items():
             for ip in ips:
                 if dns_manager.add_record(DOMAIN, RECORD_NAME, 'AAAA', line, ip):
                     total_added += 1
     elif GENERATE_IPV6:
-        print("IPv6 池为空，跳过更新")
+        print("警告: 开启了 IPv6 但 IP 池为空，跳过 AAAA 记录更新")
 
     # 最终统计
+    status_str = '成功' if total_added > 0 or (needed_ipv4==0 and needed_ipv6==0) else '失败（无记录添加）'
     summary.append(f"")
-    summary.append(f"删除记录: {total_deleted} 条")
-    summary.append(f"新增记录: {total_added} 条")
-    summary.append(f"状态: {'成功' if total_added > 0 else '失败（无记录添加）'}")
+    summary.append(f"DNS 删除: {total_deleted} 条")
+    summary.append(f"DNS 新增: {total_added} 条")
+    summary.append(f"状态: {status_str}")
 
+    final_report = "\n".join(summary)
     print("\n" + "=" * 60)
-    print("\n".join(summary))
+    # 打印时不带 HTML 标签
+    print(final_report.replace("<b>","").replace("</b>",""))
     print("=" * 60)
 
     # 发送 Telegram 通知
-    notifier.send_telegram("\n".join(summary))
+    notifier.send_telegram(final_report)
 
 
 if __name__ == "__main__":
@@ -529,6 +598,6 @@ if __name__ == "__main__":
         print("\n用户中断")
         sys.exit(1)
     except Exception as e:
-        print(f"程序异常: {e}")
+        print(f"程序异常终止: {e}")
         traceback.print_exc()
         sys.exit(1)
