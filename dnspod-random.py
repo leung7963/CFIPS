@@ -44,7 +44,7 @@ REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "5"))
 # 并发测试线程数，修改为 100
 MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "100"))
 # 每一个生成任务的最大尝试倍数（生成 N 个 IP，最多尝试 N * MULTIPLIER 次）
-ATTEMPT_MULTIPLIER = int(os.environ.get("ATTEMPT_MULTIPLIER", "15"))
+ATTEMPT_MULTIPLIER = int(os.environ.get("ATTEMPT_MULTIPLIER", "100"))
 GENERATE_IPV6 = os.environ.get("GENERATE_IPV6", "true").lower() == "true"
 
 # Cloudflare CIDR 官方源
