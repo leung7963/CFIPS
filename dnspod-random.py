@@ -169,7 +169,7 @@ class TencentDNSManager:
                 self._call_api("DeleteRecord", {"Domain": domain, "RecordId": r.get("RecordId")})
 
     def add_record(self, domain: str, sub: str, record_type: str, line: str, value: str, weight: int = 1):
-        payload = {"Domain": domain, "SubDomain": sub, "RecordType": record_type, "RecordLine": line, "Value": value, "TTL": 600, "Weight": weight}
+        payload = {"Domain": domain, "SubDomain": sub, "RecordType": record_type, "RecordLine": line, "Value": value, "TTL": 86400, "Weight": weight}
         self._call_api("CreateRecord", payload)
 
 class NotificationManager:
