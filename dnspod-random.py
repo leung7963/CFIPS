@@ -5,8 +5,9 @@
 Cloudflare 优选 IP 生成器 + 腾讯云 DNS 更新
 - 从 Cloudflare 官网动态获取 CIDR 列表
 - 随机生成 IP 并进行高并发测试
-- 分运营商线路（移动/联通/电信/境内）和默认线路添加 DNS 记录
-- 安全机制：若 IP 数量不足，不删除旧记录，不进行更新
+- 支持线路：移动、联通、电信、境内、默认
+- 安全机制：若生成的合格 IP 数量少于设定值，则不删除旧记录，不进行更新
+- 包含 Telegram 通知报告
 """
 
 import os
@@ -47,12 +48,10 @@ CF_IPV6_URL = "https://www.cloudflare.com/ips-v6"
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-# ========== 常量 ==========
-# 新增了 '境内' 线路
+# 腾讯云支持的线路
 LINES = ['移动', '联通', '电信', '境内', '默认']
 
-
-# ========== 腾讯云 API 签名函数 (保持不变) ==========
+# ========== 腾讯云 API 签名函数 ==========
 def sign_v3(service: str, action: str, version: str, payload: dict,
             secret_id: str, secret_key: str, region: str = "",
             timestamp: int = None) -> Tuple[dict, str]:
@@ -81,11 +80,11 @@ def sign_v3(service: str, action: str, version: str, payload: dict,
     headers = {"Authorization": authorization, "Content-Type": ct, "Host": "dnspod.tencentcloudapi.com", "X-TC-Action": action, "X-TC-Version": version, "X-TC-Timestamp": str(timestamp), "X-TC-Region": region}
     return headers, payload_str
 
-# ========== IP 管理类 (保持不变) ==========
+# ========== IP 管理类 ==========
 class CloudflareIPManager:
     def __init__(self):
         self.session = requests.Session()
-        self.session.headers.update({'User-Agent': 'Mozilla/5.0'})
+        self.session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) CF-Optimizer/1.0'})
         self._ipv4_cidrs = []
         self._ipv6_cidrs = []
 
@@ -145,13 +144,13 @@ class CloudflareIPManager:
                         res_ip, ok, _ = future.result()
                         if ok and res_ip not in qualified_ips:
                             qualified_ips.append(res_ip)
-                            print(f"✓ Found {len(qualified_ips)}/{num_ips}: {res_ip}")
+                            print(f"✓ 已找到 {len(qualified_ips)}/{num_ips}: {res_ip}")
                     except: pass
                     if len(qualified_ips) < num_ips: submit()
                     else: break
         return qualified_ips
 
-# ========== DNS & 通知类 (保持不变) ==========
+# ========== DNS & 通知类 ==========
 class TencentDNSManager:
     def __init__(self, secret_id: str, secret_key: str):
         self.secret_id, self.secret_key = secret_id, secret_key
@@ -173,76 +172,90 @@ class TencentDNSManager:
         payload = {"Domain": domain, "SubDomain": sub, "RecordType": record_type, "RecordLine": line, "Value": value, "TTL": 600, "Weight": weight}
         self._call_api("CreateRecord", payload)
 
-# ========== 核心修改点：IP 分配与主逻辑 ==========
+class NotificationManager:
+    @staticmethod
+    def send_telegram(text: str):
+        if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+            requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}, timeout=10)
+        except Exception as e: print(f"TG 发送失败: {e}")
 
+# ========== 分配逻辑 ==========
 def distribute_ips(ip_pool: List[str], isp_count: int, default_count: int) -> Dict[str, List[str]]:
-    """
-    更新：加入了 '境内' 线路分配逻辑
-    """
     result = {line: [] for line in LINES}
     if not ip_pool: return result
-
-    # 包含 移动、联通、电信、境内 + 默认
     total_needed = isp_count * 4 + default_count 
     pool_size = len(ip_pool)
     extended = [ip_pool[i % pool_size] for i in range(total_needed)]
-    
     idx = 0
-    # 分配运营商和境内线路
     for line in ['移动', '联通', '电信', '境内']:
         result[line] = extended[idx:idx + isp_count]
         idx += isp_count
-    # 分配默认
     result['默认'] = extended[idx:idx + default_count]
     return result
 
+# ========== 主程序 ==========
 def main():
     requests.packages.urllib3.disable_warnings()
     print("=" * 60)
-    print("Cloudflare 优选 IP (境内线路支持 + 数量安全检查版)")
+    print("Cloudflare 优选 IP 生成器 (境内线路 + 安全检查 + TG通知)")
     print("=" * 60)
 
     if not TENCENT_SECRET_ID or not TENCENT_SECRET_KEY or not DOMAIN:
-        print("错误：缺少环境变量")
+        print("错误：缺少必要环境变量")
         sys.exit(1)
 
     ip_manager = CloudflareIPManager()
     dns_manager = TencentDNSManager(TENCENT_SECRET_ID, TENCENT_SECRET_KEY)
+    notifier = NotificationManager()
 
     if not ip_manager.fetch_cloudflare_ips():
         sys.exit(1)
 
-    # 目标数量：4个ISP线路 + 1个默认线路
     needed_v4 = ISP_IP_COUNT * 4 + DEFAULT_IP_COUNT
     needed_v6 = (ISP_IP_COUNT_V6 * 4 + DEFAULT_IP_COUNT_V6) if GENERATE_IPV6 else 0
 
     ipv4_pool = ip_manager.generate_and_test_ips_concurrent(needed_v4, is_ipv6=False)
     ipv6_pool = ip_manager.generate_and_test_ips_concurrent(needed_v6, is_ipv6=True) if GENERATE_IPV6 else []
 
-    # --- 处理 IPv4 更新 ---
-    if len(ipv4_pool) >= needed_v4:
-        print(f"\n[IPv4] 找到 {len(ipv4_pool)} 个 IP，达到目标 {needed_v4}，开始更新...")
-        dns_manager.delete_records_by_type(DOMAIN, RECORD_NAME, 'A')
-        dist = distribute_ips(ipv4_pool, ISP_IP_COUNT, DEFAULT_IP_COUNT)
-        for line, ips in dist.items():
-            for ip in ips:
-                dns_manager.add_record(DOMAIN, RECORD_NAME, 'A', line, ip)
-    else:
-        print(f"\n[IPv4] 警告：仅找到 {len(ipv4_pool)}/{needed_v4}，为了防止断连，跳过删除和更新！")
+    report = [
+        f"<b>Cloudflare 优选报告</b>",
+        f"域名: {DOMAIN} ({RECORD_NAME})",
+        f"时间: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f""
+    ]
 
-    # --- 处理 IPv6 更新 ---
-    if GENERATE_IPV6:
+    # IPv4 处理
+    v4_status = "未生成"
+    if needed_v4 > 0:
+        if len(ipv4_pool) >= needed_v4:
+            dns_manager.delete_records_by_type(DOMAIN, RECORD_NAME, 'A')
+            dist = distribute_ips(ipv4_pool, ISP_IP_COUNT, DEFAULT_IP_COUNT)
+            for line, ips in dist.items():
+                for ip in ips: dns_manager.add_record(DOMAIN, RECORD_NAME, 'A', line, ip)
+            v4_status = f"✅ 更新成功 ({len(ipv4_pool)}个)"
+        else:
+            v4_status = f"❌ 数量不足 ({len(ipv4_pool)}/{needed_v4})，已跳过"
+
+    # IPv6 处理
+    v6_status = "未生成"
+    if GENERATE_IPV6 and needed_v6 > 0:
         if len(ipv6_pool) >= needed_v6:
-            print(f"\n[IPv6] 找到 {len(ipv6_pool)} 个 IP，达到目标 {needed_v6}，开始更新...")
             dns_manager.delete_records_by_type(DOMAIN, RECORD_NAME, 'AAAA')
             dist = distribute_ips(ipv6_pool, ISP_IP_COUNT_V6, DEFAULT_IP_COUNT_V6)
             for line, ips in dist.items():
-                for ip in ips:
-                    dns_manager.add_record(DOMAIN, RECORD_NAME, 'AAAA', line, ip)
+                for ip in ips: dns_manager.add_record(DOMAIN, RECORD_NAME, 'AAAA', line, ip)
+            v6_status = f"✅ 更新成功 ({len(ipv6_pool)}个)"
         else:
-            print(f"\n[IPv6] 警告：仅找到 {len(ipv6_pool)}/{needed_v6}，跳过更新！")
+            v6_status = f"❌ 数量不足 ({len(ipv6_pool)}/{needed_v6})，已跳过"
 
-    print("\n任务结束。")
+    report.append(f"IPv4: {v4_status}")
+    if GENERATE_IPV6: report.append(f"IPv6: {v6_status}")
+
+    final_text = "\n".join(report)
+    print("\n" + final_text.replace("<b>","").replace("</b>",""))
+    notifier.send_telegram(final_text)
 
 if __name__ == "__main__":
     main()
