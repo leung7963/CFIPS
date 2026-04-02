@@ -100,7 +100,7 @@ class CloudflareIPManager:
         
         # 获取原始 IPv4 列表，并排除 104 开头的段
         raw_ipv4_cidrs = get_cidrs(CF_IPV4_URL, 4)
-        self._ipv4_cidrs = [cidr for cidr in raw_ipv4_cidrs if not cidr.startswith("104.")]
+        self._ipv4_cidrs = [cidr for cidr in raw_ipv4_cidrs if not cidr.startswith("188.")]
         
         if GENERATE_IPV6: 
             self._ipv6_cidrs = get_cidrs(CF_IPV6_URL, 6)
