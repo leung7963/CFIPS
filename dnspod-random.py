@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-Cloudflare 优选 IP 生成器 + 腾讯云 DNS 更新
-- 从 Cloudflare 官网动态获取 CIDR 列表
+Cloudflare 优选 IP 生成器 + 腾讯云 DNS 更新 (已排除 104 IP 段)
+- 从 Cloudflare 官网动态获取 CIDR 列表并自动过滤 104 段
 - 随机生成 IP 并进行高并发测试
 - 支持线路：移动、联通、电信、境内、默认
 - 安全机制：若生成的合格 IP 数量少于设定值，则不删除旧记录，不进行更新
@@ -97,8 +97,14 @@ class CloudflareIPManager:
             except Exception as e:
                 print(f"获取 IPv{version} CIDR 失败: {e}")
                 return []
-        self._ipv4_cidrs = get_cidrs(CF_IPV4_URL, 4)
-        if GENERATE_IPV6: self._ipv6_cidrs = get_cidrs(CF_IPV6_URL, 6)
+        
+        # 获取原始 IPv4 列表，并排除 104 开头的段
+        raw_ipv4_cidrs = get_cidrs(CF_IPV4_URL, 4)
+        self._ipv4_cidrs = [cidr for cidr in raw_ipv4_cidrs if not cidr.startswith("104.")]
+        
+        if GENERATE_IPV6: 
+            self._ipv6_cidrs = get_cidrs(CF_IPV6_URL, 6)
+            
         return bool(self._ipv4_cidrs)
 
     def generate_random_ip_from_cidr(self, cidr: str, is_ipv6: bool = False) -> Optional[str]:
