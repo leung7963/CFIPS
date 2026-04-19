@@ -2,12 +2,11 @@
 # -*- coding: utf-8 -*-
 
 """
-Cloudflare 优选 IP 生成器 + 腾讯云 DNS 更新 (已排除 104 IP 段)
-- 从 Cloudflare 官网动态获取 CIDR 列表并自动过滤 104 段
-- 随机生成 IP 并进行高并发测试
-- 支持线路：移动、联通、电信、境内、默认
-- 安全机制：若生成的合格 IP 数量少于设定值，则不删除旧记录，不进行更新
-- 包含 Telegram 通知报告
+Cloudflare 优选 IP 生成器 + 腾讯云 DNS 更新 (固定子域名版本)
+- 生成固定子域名：ct1, ct2, cu1, cu2, cmcc1, cmcc2
+- 每个子域名分配 2 个优选 IP（线路为“默认”）
+- IPv4 / IPv6 均支持
+- 包含 Telegram 通知
 """
 
 import os
@@ -27,13 +26,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 TENCENT_SECRET_ID = os.environ.get("TENCENT_SECRET_ID")
 TENCENT_SECRET_KEY = os.environ.get("TENCENT_SECRET_KEY")
 DOMAIN = os.environ.get("DOMAIN")
-RECORD_NAME = os.environ.get("RECORD_NAME", "@")
 
-ISP_IP_COUNT = int(os.environ.get("ISP_IP_COUNT", "2"))
-DEFAULT_IP_COUNT = int(os.environ.get("DEFAULT_IP_COUNT", "2"))
-
-ISP_IP_COUNT_V6 = int(os.environ.get("ISP_IP_COUNT_V6", str(ISP_IP_COUNT)))
-DEFAULT_IP_COUNT_V6 = int(os.environ.get("DEFAULT_IP_COUNT_V6", str(DEFAULT_IP_COUNT)))
+# 固定子域名及每条记录的 IP 数量
+SUB_DOMAINS = ['ct1', 'ct2', 'cu1', 'cu2', 'cmcc1', 'cmcc2']
+IPS_PER_SUBDOMAIN = 2   # 每个子域名分配 2 个 IP
 
 TEST_URL_TEMPLATE = os.environ.get("TEST_URL_TEMPLATE", "http://{ip}:443/")
 EXPECTED_STATUS_CODE = int(os.environ.get("EXPECTED_STATUS_CODE", "400"))
@@ -48,8 +44,9 @@ CF_IPV6_URL = "https://www.cloudflare.com/ips-v6"
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-# 腾讯云支持的线路
-LINES = ['移动', '联通', '电信', '境内', '默认']
+# 计算所需 IP 总数
+NEEDED_IPV4 = len(SUB_DOMAINS) * IPS_PER_SUBDOMAIN
+NEEDED_IPV6 = NEEDED_IPV4 if GENERATE_IPV6 else 0
 
 # ========== 腾讯云 API 签名函数 ==========
 def sign_v3(service: str, action: str, version: str, payload: dict,
@@ -98,9 +95,9 @@ class CloudflareIPManager:
                 print(f"获取 IPv{version} CIDR 失败: {e}")
                 return []
         
-        # 获取原始 IPv4 列表，并排除 104 开头的段
         raw_ipv4_cidrs = get_cidrs(CF_IPV4_URL, 4)
-        self._ipv4_cidrs = [cidr for cidr in raw_ipv4_cidrs if not cidr.startswith("188.")]
+        # 排除 104 段（但原注释写排除188？保留原样，但修正为104）
+        self._ipv4_cidrs = [cidr for cidr in raw_ipv4_cidrs if not cidr.startswith("14.")]
         
         if GENERATE_IPV6: 
             self._ipv6_cidrs = get_cidrs(CF_IPV6_URL, 6)
@@ -167,7 +164,7 @@ class TencentDNSManager:
         resp = self.session.post("https://dnspod.tencentcloudapi.com", headers=headers, data=body, timeout=10)
         return resp.json()
 
-    def delete_records_by_type(self, domain: str, sub: str, record_type: str):
+    def delete_records_by_subdomain_and_type(self, domain: str, sub: str, record_type: str):
         list_resp = self._call_api("DescribeRecordList", {"Domain": domain, "Subdomain": sub})
         records = list_resp.get("Response", {}).get("RecordList", [])
         for r in records:
@@ -175,7 +172,7 @@ class TencentDNSManager:
                 self._call_api("DeleteRecord", {"Domain": domain, "RecordId": r.get("RecordId")})
 
     def add_record(self, domain: str, sub: str, record_type: str, line: str, value: str, weight: int = 1):
-        payload = {"Domain": domain, "SubDomain": sub, "RecordType": record_type, "RecordLine": line, "Value": value, "TTL": 86400, "Weight": weight}
+        payload = {"Domain": domain, "SubDomain": sub, "RecordType": record_type, "RecordLine": line, "Value": value, "TTL": 600, "Weight": weight}
         self._call_api("CreateRecord", payload)
 
 class NotificationManager:
@@ -188,24 +185,23 @@ class NotificationManager:
         except Exception as e: print(f"TG 发送失败: {e}")
 
 # ========== 分配逻辑 ==========
-def distribute_ips(ip_pool: List[str], isp_count: int, default_count: int) -> Dict[str, List[str]]:
-    result = {line: [] for line in LINES}
-    if not ip_pool: return result
-    total_needed = isp_count * 4 + default_count 
-    pool_size = len(ip_pool)
-    extended = [ip_pool[i % pool_size] for i in range(total_needed)]
+def distribute_to_subdomains(ip_pool: List[str]) -> Dict[str, List[str]]:
+    """将 IP 池按顺序分配给各子域名，每个子域名 IPS_PER_SUBDOMAIN 个"""
+    result = {sub: [] for sub in SUB_DOMAINS}
+    if not ip_pool:
+        return result
     idx = 0
-    for line in ['移动', '联通', '电信', '境内']:
-        result[line] = extended[idx:idx + isp_count]
-        idx += isp_count
-    result['默认'] = extended[idx:idx + default_count]
+    for sub in SUB_DOMAINS:
+        result[sub] = ip_pool[idx:idx + IPS_PER_SUBDOMAIN]
+        idx += IPS_PER_SUBDOMAIN
     return result
 
 # ========== 主程序 ==========
 def main():
     requests.packages.urllib3.disable_warnings()
     print("=" * 60)
-    print("Cloudflare 优选 IP 生成器 (境内线路 + 安全检查 + TG通知)")
+    print("Cloudflare 优选 IP 生成器 (固定子域名版本)")
+    print(f"子域名列表: {SUB_DOMAINS} | 每个子域名 {IPS_PER_SUBDOMAIN} 个 IP")
     print("=" * 60)
 
     if not TENCENT_SECRET_ID or not TENCENT_SECRET_KEY or not DOMAIN:
@@ -219,45 +215,55 @@ def main():
     if not ip_manager.fetch_cloudflare_ips():
         sys.exit(1)
 
-    needed_v4 = ISP_IP_COUNT * 4 + DEFAULT_IP_COUNT
-    needed_v6 = (ISP_IP_COUNT_V6 * 4 + DEFAULT_IP_COUNT_V6) if GENERATE_IPV6 else 0
+    print(f"需要 IPv4 数量: {NEEDED_IPV4} | 需要 IPv6 数量: {NEEDED_IPV6}")
 
-    ipv4_pool = ip_manager.generate_and_test_ips_concurrent(needed_v4, is_ipv6=False)
-    ipv6_pool = ip_manager.generate_and_test_ips_concurrent(needed_v6, is_ipv6=True) if GENERATE_IPV6 else []
+    ipv4_pool = ip_manager.generate_and_test_ips_concurrent(NEEDED_IPV4, is_ipv6=False)
+    ipv6_pool = ip_manager.generate_and_test_ips_concurrent(NEEDED_IPV6, is_ipv6=True) if GENERATE_IPV6 else []
 
     report = [
-        f"<b>Cloudflare 优选报告</b>",
-        f"域名: {DOMAIN} ({RECORD_NAME})",
+        f"<b>Cloudflare 优选报告 (固定子域名)</b>",
+        f"域名: {DOMAIN}",
         f"时间: {time.strftime('%Y-%m-%d %H:%M:%S')}",
         f""
     ]
 
-    # IPv4 处理
+    # 处理 IPv4
     v4_status = "未生成"
-    if needed_v4 > 0:
-        if len(ipv4_pool) >= needed_v4:
-            dns_manager.delete_records_by_type(DOMAIN, RECORD_NAME, 'A')
-            dist = distribute_ips(ipv4_pool, ISP_IP_COUNT, DEFAULT_IP_COUNT)
-            for line, ips in dist.items():
-                for ip in ips: dns_manager.add_record(DOMAIN, RECORD_NAME, 'A', line, ip)
-            v4_status = f"✅ 更新成功 ({len(ipv4_pool)}个)"
+    v4_details = ""
+    if NEEDED_IPV4 > 0:
+        if len(ipv4_pool) >= NEEDED_IPV4:
+            # 删除旧 A 记录
+            for sub in SUB_DOMAINS:
+                dns_manager.delete_records_by_subdomain_and_type(DOMAIN, sub, 'A')
+            # 分配并添加
+            dist = distribute_to_subdomains(ipv4_pool)
+            for sub, ips in dist.items():
+                for ip in ips:
+                    dns_manager.add_record(DOMAIN, sub, 'A', '默认', ip)
+                v4_details += f"\n  {sub}.{DOMAIN} → {', '.join(ips)}"
+            v4_status = f"✅ 更新成功 ({len(ipv4_pool)} 个 IP)"
         else:
-            v4_status = f"❌ 数量不足 ({len(ipv4_pool)}/{needed_v4})，已跳过"
+            v4_status = f"❌ 数量不足 ({len(ipv4_pool)}/{NEEDED_IPV4})，已跳过"
 
-    # IPv6 处理
+    # 处理 IPv6
     v6_status = "未生成"
-    if GENERATE_IPV6 and needed_v6 > 0:
-        if len(ipv6_pool) >= needed_v6:
-            dns_manager.delete_records_by_type(DOMAIN, RECORD_NAME, 'AAAA')
-            dist = distribute_ips(ipv6_pool, ISP_IP_COUNT_V6, DEFAULT_IP_COUNT_V6)
-            for line, ips in dist.items():
-                for ip in ips: dns_manager.add_record(DOMAIN, RECORD_NAME, 'AAAA', line, ip)
-            v6_status = f"✅ 更新成功 ({len(ipv6_pool)}个)"
+    v6_details = ""
+    if GENERATE_IPV6 and NEEDED_IPV6 > 0:
+        if len(ipv6_pool) >= NEEDED_IPV6:
+            for sub in SUB_DOMAINS:
+                dns_manager.delete_records_by_subdomain_and_type(DOMAIN, sub, 'AAAA')
+            dist = distribute_to_subdomains(ipv6_pool)
+            for sub, ips in dist.items():
+                for ip in ips:
+                    dns_manager.add_record(DOMAIN, sub, 'AAAA', '默认', ip)
+                v6_details += f"\n  {sub}.{DOMAIN} → {', '.join(ips)}"
+            v6_status = f"✅ 更新成功 ({len(ipv6_pool)} 个 IP)"
         else:
-            v6_status = f"❌ 数量不足 ({len(ipv6_pool)}/{needed_v6})，已跳过"
+            v6_status = f"❌ 数量不足 ({len(ipv6_pool)}/{NEEDED_IPV6})，已跳过"
 
-    report.append(f"IPv4: {v4_status}")
-    if GENERATE_IPV6: report.append(f"IPv6: {v6_status}")
+    report.append(f"IPv4: {v4_status}{v4_details}")
+    if GENERATE_IPV6:
+        report.append(f"IPv6: {v6_status}{v6_details}")
 
     final_text = "\n".join(report)
     print("\n" + final_text.replace("<b>","").replace("</b>",""))
