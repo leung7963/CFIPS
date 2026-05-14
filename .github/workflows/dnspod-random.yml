@@ -1,8 +1,8 @@
 name: 更新 Cloudflare 优选 IP 到腾讯云 DNS
 
 on:
-  schedule:
-    - cron: '10 * * * *'
+  #schedule:
+    #- cron: '10 * * * *'
   workflow_dispatch:      # 允许手动触发
 
 jobs:
