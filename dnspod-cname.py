@@ -6,7 +6,7 @@
 - 从外部 URL 获取域名列表，检测 A 记录是否全部属于 CF
 - 将可用 CF 域名随机打乱，按顺序为每个子域名分配两个（域名不重复）
 - 先删除子域名所有旧记录，再添加 CNAME
-- 若可用 CF 域名不足（子域名数×2），则报错退出
+- 支持 Telegram 通知（报告执行结果）
 """
 
 import os
@@ -44,8 +44,29 @@ socket.setdefaulttimeout(DNS_TIMEOUT)
 
 CF_IPV4_URL = 'https://www.cloudflare.com/ips-v4'
 
+# Telegram 通知配置
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-# ========== 功能函数（同前，略作精简） ==========
+
+# ========== 功能函数 ==========
+def send_telegram(text):
+    """发送 Telegram 消息（非阻塞，失败不影响主流程）"""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True
+        }
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        print(f"⚠️ Telegram 发送失败: {e}")
+
+
 def get_domains_from_url(url):
     resp = requests.get(url, timeout=15)
     resp.raise_for_status()
@@ -173,7 +194,6 @@ def delete_all_records_for_subdomain(mydomain, sub_domain, secret_id, secret_key
             'RecordId': rec['RecordId']
         }, secret_id, secret_key)
         if 'Error' not in del_resp.get('Response', {}):
-            print(f"    🗑 已删除 {rec['Name']}.{mydomain} 类型:{rec['Type']} -> {rec.get('Value', '')}")
             count += 1
         else:
             print(f"    ❌ 删除 {rec['Name']}.{mydomain} 失败: {del_resp}")
@@ -185,9 +205,10 @@ def ensure_cname_records(mydomain, sub_domain, cname_targets, secret_id, secret_
     deleted = delete_all_records_for_subdomain(mydomain, sub_domain, secret_id, secret_key)
     print(f"  ✅ 共清除 {deleted} 条记录")
 
+    added = 0
     if not cname_targets:
         print(f"  ⚠️ 没有 CNAME 目标，跳过添加")
-        return
+        return {'deleted': deleted, 'added': 0, 'targets': []}
 
     print(f"  ➕ 添加 CNAME 记录指向: {cname_targets}")
     for target in cname_targets:
@@ -201,12 +222,18 @@ def ensure_cname_records(mydomain, sub_domain, cname_targets, secret_id, secret_
         }
         create_resp = dnspod_api_call('CreateRecord', create_params, secret_id, secret_key)
         if 'Response' in create_resp and 'Error' not in create_resp['Response']:
+            added += 1
             print(f"    ✅ 已创建 {sub_domain}.{mydomain} CNAME -> {target}")
         else:
             print(f"    ❌ 创建 {sub_domain}.{mydomain} CNAME -> {target} 失败: {create_resp}")
+    return {'deleted': deleted, 'added': added, 'targets': cname_targets}
 
 
 def main():
+    # 用于构建通知消息的日志列表
+    log_lines = []
+    start_time = time.strftime('%Y-%m-%d %H:%M:%S')
+
     if not TENCENT_SECRET_ID or not TENCENT_SECRET_KEY:
         print("❌ 请设置环境变量 TENCENT_SECRET_ID 和 TENCENT_SECRET_KEY")
         sys.exit(1)
@@ -239,47 +266,56 @@ def main():
 
     cf_domains = [r['domain'] for r in results if r['is_all_cf']]
     print(f"\n📊 检测完毕：完全在 CF 上的域名共 {len(cf_domains)} 个")
-    if cf_domains:
-        for d in cf_domains:
-            print(f"  - {d}")
+    log_lines.append(f"检测到 {len(cf_domains)} 个全 CF 域名")
 
     if not cf_domains:
-        print("❌ 没有找到任何 CF 域名，无法设置 CNAME，退出。")
+        msg = "❌ 没有找到任何 CF 域名，无法设置 CNAME，退出。"
+        print(msg)
+        log_lines.append(msg)
+        send_telegram("\n".join(log_lines))
         return
 
     # 准备目标分配
     if AUTO_PICK:
         needed = len(SUB_DOMAINS) * 2
         if len(cf_domains) < needed:
-            print(f"❌ CF 域名数量不足：需要 {needed} 个，实际 {len(cf_domains)} 个，无法为每个子域名分配 2 个不重复域名，退出。")
+            msg = f"❌ CF 域名数量不足：需要 {needed} 个，实际 {len(cf_domains)} 个，无法为每个子域名分配 2 个不重复域名，退出。"
+            print(msg)
+            log_lines.append(msg)
+            send_telegram("\n".join(log_lines))
             return
-        # 随机打乱并顺序分配
         shuffled = cf_domains.copy()
         random.shuffle(shuffled)
-        # 将打乱后的列表按子域名数量切片为每组 2 个
         targets_map = {}
         idx = 0
         for sub in SUB_DOMAINS:
             targets_map[sub] = shuffled[idx:idx+2]
             idx += 2
         print(f"\n🎲 已为每个子域名分配不重复的 CF 域名对：")
+        log_lines.append("自动分配结果：")
         for sub, targets in targets_map.items():
-            print(f"  {sub}.{DOMAIN} -> {targets}")
+            line = f"  {sub}.{DOMAIN} -> {targets}"
+            print(line)
+            log_lines.append(line)
     else:
-        # 手动模式：所有子域名共用同一组
         targets_map = {sub: MANUAL_CF_TARGETS for sub in SUB_DOMAINS}
         print(f"\n🎯 手动指定 CNAME 目标（所有子域名共用）: {MANUAL_CF_TARGETS}")
-
-    print(f"\n📋 主域名: {DOMAIN}")
-    print(f"📋 子域名: {SUB_DOMAINS}")
+        log_lines.append(f"手动目标：{MANUAL_CF_TARGETS}")
 
     # 直接执行修改
     print("\n🔨 开始修改 DNS 记录...")
+    summary = []
     for sub in SUB_DOMAINS:
         targets = targets_map[sub]
         print(f"  🌍 处理子域名: {sub}.{DOMAIN}，目标: {targets}")
-        ensure_cname_records(DOMAIN, sub, targets, TENCENT_SECRET_ID, TENCENT_SECRET_KEY)
+        res = ensure_cname_records(DOMAIN, sub, targets, TENCENT_SECRET_ID, TENCENT_SECRET_KEY)
+        summary.append(f"{sub}.{DOMAIN}: 删除 {res['deleted']} 条记录，添加 {res['added']} 条 CNAME")
+
     print("✅ 全部完成。")
+    summary.insert(0, f"主域名: {DOMAIN}")
+    summary.insert(0, f"执行时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    final_msg = "\n".join(log_lines + summary)
+    send_telegram(final_msg)
 
 
 if __name__ == '__main__':
