@@ -6,8 +6,14 @@ block.io.cdn.cloudflare.net
 s.ee.cdn.cloudflare.net
 global-cdn.me.cdn.cloudflare.net
 chain.so.cdn.cloudflare.net
-ip.sb
+www.visa.cn
+www.shopify.com
+store.ubi.com
+staticdelivery.nexusmods.com
 time.is
+icook.hk
+icook.tw
+ip.sb
 ip.skk.moe
 bestcfv4.030101.xyz
 mfa.gov.ua
