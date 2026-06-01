@@ -4,8 +4,9 @@
 """
 外部域名 Cloudflare CNAME 工具（DNS 解析版）
 - 从外部 URL 获取域名列表
-- 通过 DNS 解析每个域名的 A 记录 IP
-- 若 IP 属于 Cloudflare，则删除该域名在腾讯云的现有记录，并 CNAME 到优选子域名
+- 先删除域名在腾讯云的原有全部记录
+- 再通过 DNS 解析域名的 A 记录 IP
+- 若 IP 属于 Cloudflare，则 CNAME 到优选子域名
 - 每个优选子域名最多被 2 个外部域名指向（轮询分配）
 - 支持 Telegram 通知
 """
@@ -113,7 +114,6 @@ class CloudflareIPChecker:
 def dns_resolve_a(domain: str) -> Optional[str]:
     """解析域名的 A 记录，返回第一个 IPv4 地址，失败返回 None"""
     try:
-        # 只查询 IPv4
         addrs = socket.getaddrinfo(domain, None, socket.AF_INET, socket.SOCK_STREAM)
         for addr in addrs:
             ip = addr[4][0]
@@ -131,8 +131,6 @@ def split_domain(full_domain: str) -> Tuple[str, str]:
         www.example.com -> (example.com, www)
         a.b.example.com -> (example.com, a.b)
     """
-    # 简单规则：取最后两段作为主域名（假设为公共后缀如 .com/.net 等）
-    # 此处未处理 .co.uk 等复杂情况，可按需扩展
     parts = full_domain.split(".")
     if len(parts) <= 2:
         return full_domain, "@"
@@ -248,23 +246,23 @@ def main():
     for full_domain in external_domains:
         print(f"\n处理域名: {full_domain}")
         try:
-            # 1. DNS 解析 A 记录
+            # ---------- 第一步：拆分域名并删除腾讯云原有全部记录 ----------
+            main_domain, sub_domain = split_domain(full_domain)
+            print(f"  先删除 {full_domain} 在腾讯云的全部记录")
+            dns_mgr.delete_all_records(main_domain, sub_domain)
+
+            # ---------- 第二步：DNS 解析 A 记录 ----------
             ip = dns_resolve_a(full_domain)
             if ip is None:
                 results.append(f"  {full_domain}: DNS 解析失败，无 A 记录，跳过")
                 continue
 
-            # 2. 检查 IP 是否为 Cloudflare
+            # ---------- 第三步：检查 IP 是否为 Cloudflare IP ----------
             if not cf_checker.is_cloudflare_ip(ip):
                 results.append(f"  ⚠️ {full_domain}: IP {ip} 不是 Cloudflare IP，跳过")
                 continue
 
-            # 3. 拆分为腾讯云 API 需要的主域名和子域名
-            main_domain, sub_domain = split_domain(full_domain)
-            # 注意：这里假设主域名在腾讯云托管，如果不在，后续删除/添加会失败
-            # 你可以添加一个简单的检查（可选）
-
-            # 4. 查找可用的优选子域名
+            # ---------- 第四步：分配优选子域名并添加 CNAME ----------
             target_sub = None
             for i in range(len(SUB_DOMAINS)):
                 idx = (current_index + i) % len(SUB_DOMAINS)
@@ -277,10 +275,6 @@ def main():
                 results.append(f"  ❌ {full_domain}: 优选子域名配额已满，跳过")
                 continue
 
-            # 5. 删除原有记录
-            dns_mgr.delete_all_records(main_domain, sub_domain)
-
-            # 6. 添加 CNAME
             cname_target = f"{target_sub}.{DOMAIN}."
             success = dns_mgr.add_cname_record(main_domain, sub_domain, cname_target)
 
