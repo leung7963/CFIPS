@@ -40,7 +40,7 @@ MANUAL_TARGETS_STR = os.environ.get("MANUAL_CF_TARGETS", "")
 MANUAL_CF_TARGETS = [t.strip() for t in MANUAL_TARGETS_STR.split(",") if t.strip()] if MANUAL_TARGETS_STR else []
 
 # 是否真实更新 DNS
-DO_UPDATE = os.environ.get("DO_UPDATE", "False").lower() in ("true", "1", "yes")
+DO_UPDATE = os.environ.get("DO_UPDATE", "true").lower() in ("true", "1", "yes")
 
 # 外部域名列表 URL
 EXTERNAL_DOMAINS_URL = os.environ.get(
