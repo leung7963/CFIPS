@@ -1,4 +1,3 @@
-import re
 import socket
 import ipaddress
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -12,26 +11,28 @@ socket.setdefaulttimeout(DNS_TIMEOUT)
 
 # Cloudflare IPv4 范围获取地址
 CF_IPV4_URL = 'https://www.cloudflare.com/ips-v4'
-# 需检测的 JS 文件地址
-DOMAIN_JS_URL = 'https://raw.githubusercontent.com/leung7963/CFIPS/main/domain.js'
+# 需检测的域名列表文件（每行一个域名）
+DOMAIN_LIST_URL = 'https://raw.githubusercontent.com/leung7963/CFIPS/main/domain.js'
 
 
-def get_domains_from_js(url):
-    """从 JS 文件中提取域名列表"""
+def get_domains_from_url(url):
+    """从 URL 读取域名列表（每行一个域名，忽略空行与 # 开头的注释）"""
     resp = requests.get(url, timeout=15)
     resp.raise_for_status()
-    content = resp.text
-
-    # 提取所有单引号或双引号内的字符串
-    candidates = re.findall(r'["\']([^"\']+)["\']', content)
     domains = []
-    for c in candidates:
-        c = c.strip()
-        # 简单过滤：含点、非 http 开头、非路径、非注释
-        if '.' in c and not c.startswith('http') and not c.startswith('/') and not c.startswith('#'):
-            domains.append(c)
-    # 去重
-    return list(set(domains))
+    for line in resp.text.splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        domains.append(line)
+    # 去重并保持顺序
+    seen = set()
+    unique_domains = []
+    for d in domains:
+        if d not in seen:
+            seen.add(d)
+            unique_domains.append(d)
+    return unique_domains
 
 
 def get_cloudflare_ipv4_networks():
@@ -78,7 +79,6 @@ def check_domain(domain, cf_networks):
         else:
             non_cf_ips.append(ip_str)
 
-    # 只有当所有解析到的 IP 都属于 Cloudflare 时，才视为“完全在 CF 上”
     is_all_cf = len(non_cf_ips) == 0 and len(cf_ips) > 0
 
     return {
@@ -94,11 +94,11 @@ def check_domain(domain, cf_networks):
 def main():
     print("🔍 Fetching domain list...")
     try:
-        domains = get_domains_from_js(DOMAIN_JS_URL)
+        domains = get_domains_from_url(DOMAIN_LIST_URL)
     except Exception as e:
         print(f"❌ Failed to fetch domain list: {e}")
         sys.exit(1)
-    print(f"✅ Found {len(domains)} unique domains.\n")
+    print(f"✅ Found {len(domains)} domains.\n")
 
     print("🌐 Fetching Cloudflare IPv4 ranges...")
     try:
