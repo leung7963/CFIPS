@@ -31,7 +31,7 @@ MY_DOMAINS_STR = os.environ.get("DOMAIN")
 MY_DOMAINS = os.environ.get("DOMAIN")
 
 # 子域名列表（逗号分隔）
-SUB_DOMAINS_STR = os.environ.get("SUB_DOMAINS", "1-1,1-2,2-1,2-2")
+#SUB_DOMAINS_STR = os.environ.get("SUB_DOMAINS", "1-1,1-2,2-1,2-2")
 SUB_DOMAINS = [s.strip() for s in SUB_DOMAINS_STR.split(",") if s.strip()]
 
 # CNAME 目标选择模式
