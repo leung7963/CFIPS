@@ -1,3 +1,11 @@
+ping.pe.cdn.cloudflare.net
+uvod.tv.cdn.cloudflare.net
+huaren.live.cdn.cloudflare.net
+nodeseek.com.cdn.cloudflare.net
+block.io.cdn.cloudflare.net
+s.ee.cdn.cloudflare.net
+global-cdn.me.cdn.cloudflare.net
+chain.so.cdn.cloudflare.net
 ip.sb
 time.is
 ip.skk.moe
