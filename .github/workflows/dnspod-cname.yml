@@ -1,0 +1,62 @@
+name: 更新 Cloudflare 优选 域名 到腾讯云 DNS
+
+on:
+  #schedule:
+    #- cron: '10 * * * *'
+  workflow_dispatch:      # 允许手动触发
+
+jobs:
+  update-dns:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v3
+
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+          pip install --upgrade tencentcloud-sdk-python
+          # ipaddress 是 Python 标准库，无需额外安装
+
+      - name: 执行 IP 生成与 DNS 更新
+        env:
+          # 必需：腾讯云密钥和域名
+          TENCENT_SECRET_ID: ${{ secrets.TENCENT_SECRET_ID }}
+          TENCENT_SECRET_KEY: ${{ secrets.TENCENT_SECRET_KEY }}
+          DOMAIN: ${{ secrets.DOMAIN }}
+
+          # 可选：主机记录，默认为 @
+          RECORD_NAME: ${{ secrets.RECORD_NAME || '@' }}
+
+          # IP 数量配置（脚本中已设默认值，可根据需要覆盖）
+          #ISP_IP_COUNT: ${{ secrets.ISP_IP_COUNT }}
+          #DEFAULT_IP_COUNT: ${{ secrets.DEFAULT_IP_COUNT }}
+          #GENERATE_IPV6: ${{ secrets.GENERATE_IPV6 }}
+          #ISP_IP_COUNT_V6: ${{ secrets.ISP_IP_COUNT_V6 }}
+          #DEFAULT_IP_COUNT_V6: ${{ secrets.DEFAULT_IP_COUNT_V6 }}
+
+          # IP 测试配置（脚本中已设默认值）
+          #TEST_URL_TEMPLATE: ${{ secrets.TEST_URL_TEMPLATE }}
+          #EXPECTED_STATUS_CODE: ${{ secrets.EXPECTED_STATUS_CODE }}
+          #REQUEST_TIMEOUT: ${{ secrets.REQUEST_TIMEOUT }}
+          #MAX_WORKERS: ${{ secrets.MAX_WORKERS }}
+          #MAX_RETRY_ATTEMPTS: ${{ secrets.MAX_RETRY_ATTEMPTS }}
+
+          # Telegram 通知（可选）
+          TELEGRAM_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.CHAT_ID }}
+
+        run: python -u dnspod-cname.py
+  workflow-keepalive:
+    #if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - uses: leung7963/gh-workflow-keepalive@main
