@@ -2,11 +2,10 @@
 # -*- coding: utf-8 -*-
 
 """
-外部域名 Cloudflare CNAME 工具（先检测 CF IP 再处理）
+外部域名 Cloudflare CNAME 工具（DNS 解析版）
 - 从外部 URL 获取域名列表
-- 自动拆分主域名和子域名（如 www.example.com → example.com / www）
-- 检测域名的 A 记录 IP 是否属于 Cloudflare
-- 如果是 CF IP，先删除该域名的所有记录，再 CNAME 到优选子域名
+- 通过 DNS 解析每个域名的 A 记录 IP
+- 若 IP 属于 Cloudflare，则删除该域名在腾讯云的现有记录，并 CNAME 到优选子域名
 - 每个优选子域名最多被 2 个外部域名指向（轮询分配）
 - 支持 Telegram 通知
 """
@@ -18,6 +17,7 @@ import json
 import hashlib
 import hmac
 import ipaddress
+import socket
 import requests
 from typing import List, Dict, Tuple, Optional
 
@@ -31,7 +31,7 @@ MAX_CNAME_PER_SUB = 2  # 每个优选子域名最多 2 个外部域名
 
 EXTERNAL_DOMAINS_URL = os.environ.get(
     "EXTERNAL_DOMAINS_URL",
-    "https://raw.githubusercontent.com/leung7963/CFIPS/main/domain.js"
+    "https://euserv.0662.ip-ddns.com/domain.txt"
 )
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -109,7 +109,39 @@ class CloudflareIPChecker:
         except:
             return False
 
-# ========== 腾讯云 DNS 管理（增强域名拆分） ==========
+# ========== DNS 解析 ==========
+def dns_resolve_a(domain: str) -> Optional[str]:
+    """解析域名的 A 记录，返回第一个 IPv4 地址，失败返回 None"""
+    try:
+        # 只查询 IPv4
+        addrs = socket.getaddrinfo(domain, None, socket.AF_INET, socket.SOCK_STREAM)
+        for addr in addrs:
+            ip = addr[4][0]
+            if ipaddress.IPv4Address(ip):
+                return ip
+    except socket.gaierror:
+        pass
+    return None
+
+# ========== 域名拆分（用于腾讯云 API） ==========
+def split_domain(full_domain: str) -> Tuple[str, str]:
+    """
+    将完整域名拆分为腾讯云 API 所需的主域名和子域名
+    例: example.com -> (example.com, @)
+        www.example.com -> (example.com, www)
+        a.b.example.com -> (example.com, a.b)
+    """
+    # 简单规则：取最后两段作为主域名（假设为公共后缀如 .com/.net 等）
+    # 此处未处理 .co.uk 等复杂情况，可按需扩展
+    parts = full_domain.split(".")
+    if len(parts) <= 2:
+        return full_domain, "@"
+    else:
+        main_domain = ".".join(parts[-2:])
+        sub_domain = ".".join(parts[:-2])
+        return main_domain, sub_domain
+
+# ========== 腾讯云 DNS 管理 ==========
 class TencentDNSManager:
     def __init__(self, secret_id: str, secret_key: str):
         self.secret_id, self.secret_key = secret_id, secret_key
@@ -122,63 +154,23 @@ class TencentDNSManager:
                                  headers=headers, data=body, timeout=10)
         return resp.json()
 
-    def _list_records(self, domain: str, sub: str = None) -> List[dict]:
-        payload = {"Domain": domain}
-        if sub is not None:
-            payload["Subdomain"] = sub
+    def _list_records(self, domain: str, sub: str) -> Optional[List[dict]]:
+        """查询指定子域名的记录列表，失败返回 None"""
+        payload = {"Domain": domain, "Subdomain": sub}
         resp = self._call_api("DescribeRecordList", payload)
         err = resp.get("Response", {}).get("Error")
         if err:
             print(f"  查询记录失败: {err.get('Message')}")
-            return []
+            return None
         return resp.get("Response", {}).get("RecordList", [])
-
-    def get_a_records_auto(self, full_domain: str) -> Tuple[Optional[str], Optional[str], List[dict]]:
-        """
-        自动拆分域名并查找 A 记录
-        返回: (主域名, 子域名, A记录列表)
-        """
-        # 尝试1：完整域名作为主域名，子域名为 @
-        print(f"  尝试查询: Domain={full_domain}, Subdomain=@")
-        records = self._list_records(full_domain, "@")
-        if records:
-            a_records = [r for r in records if r.get("Type") == "A"]
-            if a_records:
-                return full_domain, "@", a_records
-            else:
-                print(f"    找到 {len(records)} 条记录，但无 A 记录")
-
-        # 尝试2：完整域名作为主域名，不指定子域名（查所有记录）
-        print(f"  尝试查询: Domain={full_domain} (所有记录)")
-        records = self._list_records(full_domain)
-        if records:
-            # 过滤根域名 A 记录（Name 为 @ 或空）
-            a_records = [r for r in records if r.get("Type") == "A" and r.get("Name") in ("@", "")]
-            if a_records:
-                return full_domain, "@", a_records
-            else:
-                print(f"    找到记录但根域名无 A 记录")
-
-        # 尝试3：拆分多级域名（如 www.example.com → main=example.com, sub=www）
-        parts = full_domain.split(".")
-        if len(parts) > 2:
-            main_domain = ".".join(parts[-2:])
-            sub_domain = ".".join(parts[:-2])
-            print(f"  尝试拆分: Domain={main_domain}, Subdomain={sub_domain}")
-            records = self._list_records(main_domain, sub_domain)
-            if records:
-                a_records = [r for r in records if r.get("Type") == "A"]
-                if a_records:
-                    return main_domain, sub_domain, a_records
-                else:
-                    print(f"    找到记录但无 A 记录")
-
-        return None, None, []
 
     def delete_all_records(self, domain: str, sub: str):
         """删除指定子域名的所有记录"""
         print(f"  准备删除 {sub}.{domain} 的所有记录")
         records = self._list_records(domain, sub)
+        if records is None:
+            print("  无法获取记录列表，跳过删除")
+            return
         for r in records:
             print(f"    删除: {r.get('Name')}.{domain} 类型:{r.get('Type')}")
             self._call_api("DeleteRecord", {"Domain": domain, "RecordId": r.get("RecordId")})
@@ -228,7 +220,7 @@ def fetch_external_domains(url: str) -> List[str]:
 def main():
     requests.packages.urllib3.disable_warnings()
     print("=" * 60)
-    print("外部域名 Cloudflare CNAME 工具")
+    print("外部域名 Cloudflare CNAME 工具 (DNS 解析版)")
     print(f"每个优选子域名最多 {MAX_CNAME_PER_SUB} 个域名")
     print("=" * 60)
 
@@ -256,23 +248,23 @@ def main():
     for full_domain in external_domains:
         print(f"\n处理域名: {full_domain}")
         try:
-            # 1. 获取 A 记录（自动拆分域名）
-            main_domain, sub_domain, a_records = dns_mgr.get_a_records_auto(full_domain)
-            if not a_records:
-                results.append(f"  {full_domain}: 未找到 A 记录，跳过")
+            # 1. DNS 解析 A 记录
+            ip = dns_resolve_a(full_domain)
+            if ip is None:
+                results.append(f"  {full_domain}: DNS 解析失败，无 A 记录，跳过")
                 continue
 
-            first_ip = a_records[0].get("Value", "")
-            if not first_ip:
-                results.append(f"  {full_domain}: A 记录无 IP 值，跳过")
+            # 2. 检查 IP 是否为 Cloudflare
+            if not cf_checker.is_cloudflare_ip(ip):
+                results.append(f"  ⚠️ {full_domain}: IP {ip} 不是 Cloudflare IP，跳过")
                 continue
 
-            # 2. 检查是否为 Cloudflare IP
-            if not cf_checker.is_cloudflare_ip(first_ip):
-                results.append(f"  ⚠️ {full_domain}: IP {first_ip} 不是 Cloudflare IP，跳过")
-                continue
+            # 3. 拆分为腾讯云 API 需要的主域名和子域名
+            main_domain, sub_domain = split_domain(full_domain)
+            # 注意：这里假设主域名在腾讯云托管，如果不在，后续删除/添加会失败
+            # 你可以添加一个简单的检查（可选）
 
-            # 3. 查找可用的优选子域名（每个最多 2 个外部域名）
+            # 4. 查找可用的优选子域名
             target_sub = None
             for i in range(len(SUB_DOMAINS)):
                 idx = (current_index + i) % len(SUB_DOMAINS)
@@ -285,10 +277,10 @@ def main():
                 results.append(f"  ❌ {full_domain}: 优选子域名配额已满，跳过")
                 continue
 
-            # 4. 删除原有记录
+            # 5. 删除原有记录
             dns_mgr.delete_all_records(main_domain, sub_domain)
 
-            # 5. 添加 CNAME
+            # 6. 添加 CNAME
             cname_target = f"{target_sub}.{DOMAIN}."
             success = dns_mgr.add_cname_record(main_domain, sub_domain, cname_target)
 
@@ -301,7 +293,7 @@ def main():
         except Exception as e:
             results.append(f"  ❌ {full_domain}: 异常 - {e}")
 
-    # 生成 Telegram 报告
+    # 生成报告
     usage_report = "\n".join([f"  {sub}.{DOMAIN} : {count}/{MAX_CNAME_PER_SUB}" for sub, count in sub_usage.items()])
     report = [
         f"<b>外部域名 CNAME 处理报告</b>",
