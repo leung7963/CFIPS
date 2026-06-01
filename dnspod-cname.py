@@ -31,7 +31,7 @@ MAX_CNAME_PER_SUB = 2  # 每个优选子域名最多 2 个外部域名
 
 EXTERNAL_DOMAINS_URL = os.environ.get(
     "EXTERNAL_DOMAINS_URL",
-    "https://euserv.0662.ip-ddns.com/domain.txt"
+    "https://raw.githubusercontent.com/leung7963/CFIPS/main/domain.js"
 )
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
