@@ -27,8 +27,8 @@ TENCENT_SECRET_ID = os.environ.get("TENCENT_SECRET_ID", "")
 TENCENT_SECRET_KEY = os.environ.get("TENCENT_SECRET_KEY", "")
 
 # 你自己的域名（逗号分隔）
-MY_DOMAINS_STR = os.environ.get("MY_DOMAINS", "")
-MY_DOMAINS = [d.strip() for d in MY_DOMAINS_STR.split(",") if d.strip()] if MY_DOMAINS_STR else []
+MY_DOMAINS_STR = os.environ.get("DOMAIN")
+MY_DOMAINS = os.environ.get("DOMAIN")
 
 # 子域名列表（逗号分隔）
 SUB_DOMAINS_STR = os.environ.get("SUB_DOMAINS", "1-1,1-2,2-1,2-2")
