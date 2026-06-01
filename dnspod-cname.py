@@ -2,11 +2,11 @@
 # -*- coding: utf-8 -*-
 
 """
-将你腾讯云域名下的每个子域名独立随机 CNAME 到两个全 Cloudflare 域名
-- 从外部 URL 获取域名列表，并发检测其 A 记录是否全部属于 CF
-- 为每个子域名随机选取两个全 CF 域名作为 CNAME 目标（各子域名目标可能不同）
-- 先删除该子域名所有旧记录，再添加 CNAME
-- 直接执行，无模拟模式
+将你腾讯云域名下的每个子域名分配两个不重复的全 Cloudflare 域名作为 CNAME
+- 从外部 URL 获取域名列表，检测 A 记录是否全部属于 CF
+- 将可用 CF 域名随机打乱，按顺序为每个子域名分配两个（域名不重复）
+- 先删除子域名所有旧记录，再添加 CNAME
+- 若可用 CF 域名不足（子域名数×2），则报错退出
 """
 
 import os
@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 
 # ========== 环境变量配置 ==========
-DOMAIN = os.environ.get("DOMAIN", "")                      # 你的主域名（仅一个）
+DOMAIN = os.environ.get("DOMAIN", "")                      # 你的主域名
 SUB_DOMAINS_STR = os.environ.get("SUB_DOMAINS", "1-1,1-2,2-1,2-2")
 SUB_DOMAINS = [s.strip() for s in SUB_DOMAINS_STR.split(",") if s.strip()]
 
@@ -45,7 +45,7 @@ socket.setdefaulttimeout(DNS_TIMEOUT)
 CF_IPV4_URL = 'https://www.cloudflare.com/ips-v4'
 
 
-# ========== 功能函数 ==========
+# ========== 功能函数（同前，略作精简） ==========
 def get_domains_from_url(url):
     resp = requests.get(url, timeout=15)
     resp.raise_for_status()
@@ -247,26 +247,36 @@ def main():
         print("❌ 没有找到任何 CF 域名，无法设置 CNAME，退出。")
         return
 
+    # 准备目标分配
     if AUTO_PICK:
-        print(f"\n🎲 自动随机模式：每个子域名将独立随机挑选 2 个 CF 域名")
-    else:
-        cname_targets = MANUAL_CF_TARGETS
-        if not cname_targets:
-            print("❌ 手动模式但未提供 MANUAL_CF_TARGETS，退出。")
+        needed = len(SUB_DOMAINS) * 2
+        if len(cf_domains) < needed:
+            print(f"❌ CF 域名数量不足：需要 {needed} 个，实际 {len(cf_domains)} 个，无法为每个子域名分配 2 个不重复域名，退出。")
             return
-        print(f"\n🎯 手动指定 CNAME 目标（所有子域名共用）: {cname_targets}")
+        # 随机打乱并顺序分配
+        shuffled = cf_domains.copy()
+        random.shuffle(shuffled)
+        # 将打乱后的列表按子域名数量切片为每组 2 个
+        targets_map = {}
+        idx = 0
+        for sub in SUB_DOMAINS:
+            targets_map[sub] = shuffled[idx:idx+2]
+            idx += 2
+        print(f"\n🎲 已为每个子域名分配不重复的 CF 域名对：")
+        for sub, targets in targets_map.items():
+            print(f"  {sub}.{DOMAIN} -> {targets}")
+    else:
+        # 手动模式：所有子域名共用同一组
+        targets_map = {sub: MANUAL_CF_TARGETS for sub in SUB_DOMAINS}
+        print(f"\n🎯 手动指定 CNAME 目标（所有子域名共用）: {MANUAL_CF_TARGETS}")
 
     print(f"\n📋 主域名: {DOMAIN}")
     print(f"📋 子域名: {SUB_DOMAINS}")
 
-    # 直接执行
+    # 直接执行修改
     print("\n🔨 开始修改 DNS 记录...")
     for sub in SUB_DOMAINS:
-        if AUTO_PICK:
-            pick_count = min(2, len(cf_domains))
-            targets = random.sample(cf_domains, pick_count)
-        else:
-            targets = cname_targets
+        targets = targets_map[sub]
         print(f"  🌍 处理子域名: {sub}.{DOMAIN}，目标: {targets}")
         ensure_cname_records(DOMAIN, sub, targets, TENCENT_SECRET_ID, TENCENT_SECRET_KEY)
     print("✅ 全部完成。")
