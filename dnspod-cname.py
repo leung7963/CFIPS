@@ -2,11 +2,11 @@
 # -*- coding: utf-8 -*-
 
 """
-将你腾讯云域名下的指定子域名 CNAME 到随机挑选的两个全 Cloudflare 域名
+将你腾讯云域名下的每个子域名独立随机 CNAME 到两个全 Cloudflare 域名
 - 从外部 URL 获取域名列表，并发检测其 A 记录是否全部属于 CF
-- 随机选取两个全 CF 域名作为 CNAME 目标
-- 先删除子域名所有旧记录，再添加 CNAME
-- 配置：一个主域名 DOMAIN + 子域名列表 SUB_DOMAINS
+- 为每个子域名随机选取两个全 CF 域名作为 CNAME 目标（各子域名目标可能不同）
+- 先删除该子域名所有旧记录，再添加 CNAME
+- 直接执行，无模拟模式
 """
 
 import os
@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
-# ========== 环境变量配置（简洁版） ==========
+# ========== 环境变量配置 ==========
 DOMAIN = os.environ.get("DOMAIN", "")                      # 你的主域名（仅一个）
 SUB_DOMAINS_STR = os.environ.get("SUB_DOMAINS", "1-1,1-2,2-1,2-2")
 SUB_DOMAINS = [s.strip() for s in SUB_DOMAINS_STR.split(",") if s.strip()]
@@ -33,8 +33,6 @@ TENCENT_SECRET_KEY = os.environ.get("TENCENT_SECRET_KEY", "")
 AUTO_PICK = os.environ.get("AUTO_PICK_CF_TARGETS", "True").lower() in ("true", "1", "yes")
 MANUAL_TARGETS_STR = os.environ.get("MANUAL_CF_TARGETS", "")
 MANUAL_CF_TARGETS = [t.strip() for t in MANUAL_TARGETS_STR.split(",") if t.strip()] if MANUAL_TARGETS_STR else []
-
-DO_UPDATE = os.environ.get("DO_UPDATE", "true").lower() in ("true", "1", "yes")
 
 EXTERNAL_DOMAINS_URL = os.environ.get(
     "EXTERNAL_DOMAINS_URL",
@@ -47,9 +45,8 @@ socket.setdefaulttimeout(DNS_TIMEOUT)
 CF_IPV4_URL = 'https://www.cloudflare.com/ips-v4'
 
 
-# ========== 功能函数（保持不变） ==========
+# ========== 功能函数 ==========
 def get_domains_from_url(url):
-    """读取域名列表（每行一个域名，去重）"""
     resp = requests.get(url, timeout=15)
     resp.raise_for_status()
     domains = []
@@ -68,7 +65,6 @@ def get_domains_from_url(url):
 
 
 def get_cloudflare_ipv4_networks():
-    """获取 Cloudflare IPv4 地址段"""
     resp = requests.get(CF_IPV4_URL, timeout=15)
     resp.raise_for_status()
     nets = []
@@ -80,7 +76,6 @@ def get_cloudflare_ipv4_networks():
 
 
 def resolve_a(domain):
-    """解析域名的 A 记录，返回 IPv4 集合"""
     try:
         addrinfo = socket.getaddrinfo(domain, None, socket.AF_INET)
         return {addr[4][0] for addr in addrinfo}
@@ -89,7 +84,6 @@ def resolve_a(domain):
 
 
 def check_domain(domain, cf_networks):
-    """检查域名的 A 记录是否全部属于 Cloudflare"""
     ips = resolve_a(domain)
     if ips is None:
         return {'domain': domain, 'ips': [], 'is_all_cf': False, 'error': 'DNS resolve failed'}
@@ -113,28 +107,26 @@ def check_domain(domain, cf_networks):
 
 
 def dnspod_api_call(action, params, secret_id, secret_key):
-    """腾讯云 DNSPod API 签名 V3"""
-    endpoint = 'dnspod.tencentcloudapi.com'
+    host = 'dnspod.tencentcloudapi.com'
     service = 'dnspod'
-    host = endpoint
     algorithm = 'TC3-HMAC-SHA256'
     timestamp = int(time.time())
     date = time.strftime('%Y-%m-%d', time.gmtime(timestamp))
 
-    http_request_method = 'POST'
+    http_method = 'POST'
     canonical_uri = '/'
     canonical_querystring = ''
     ct = 'application/json; charset=utf-8'
     payload = json.dumps(params)
     canonical_headers = f'content-type:{ct}\nhost:{host}\n'
     signed_headers = 'content-type;host'
-    hashed_request_payload = hashlib.sha256(payload.encode('utf-8')).hexdigest()
-    canonical_request = (http_request_method + '\n' +
+    hashed_payload = hashlib.sha256(payload.encode('utf-8')).hexdigest()
+    canonical_request = (http_method + '\n' +
                          canonical_uri + '\n' +
                          canonical_querystring + '\n' +
                          canonical_headers + '\n' +
                          signed_headers + '\n' +
-                         hashed_request_payload)
+                         hashed_payload)
 
     credential_scope = f'{date}/{service}/tc3_request'
     hashed_canonical_request = hashlib.sha256(canonical_request.encode('utf-8')).hexdigest()
@@ -164,17 +156,12 @@ def dnspod_api_call(action, params, secret_id, secret_key):
         'X-TC-Timestamp': str(timestamp),
         'X-TC-Version': '2021-03-23'
     }
-
     resp = requests.post(f'https://{host}', headers=headers, data=payload)
     return resp.json()
 
 
 def delete_all_records_for_subdomain(mydomain, sub_domain, secret_id, secret_key):
-    """删除指定子域名的全部解析记录"""
-    params = {
-        'Domain': mydomain,
-        'Subdomain': sub_domain
-    }
+    params = {'Domain': mydomain, 'Subdomain': sub_domain}
     resp = dnspod_api_call('DescribeRecordList', params, secret_id, secret_key)
     records = resp.get('Response', {}).get('RecordList', [])
     if not records:
@@ -194,7 +181,6 @@ def delete_all_records_for_subdomain(mydomain, sub_domain, secret_id, secret_key
 
 
 def ensure_cname_records(mydomain, sub_domain, cname_targets, secret_id, secret_key):
-    """先删除子域名所有旧记录，再添加 CNAME 到每个目标"""
     print(f"  🧹 清除 {sub_domain}.{mydomain} 的现有记录...")
     deleted = delete_all_records_for_subdomain(mydomain, sub_domain, secret_id, secret_key)
     print(f"  ✅ 共清除 {deleted} 条记录")
@@ -221,7 +207,6 @@ def ensure_cname_records(mydomain, sub_domain, cname_targets, secret_id, secret_
 
 
 def main():
-    # 必要检查
     if not TENCENT_SECRET_ID or not TENCENT_SECRET_KEY:
         print("❌ 请设置环境变量 TENCENT_SECRET_ID 和 TENCENT_SECRET_KEY")
         sys.exit(1)
@@ -232,7 +217,7 @@ def main():
         print("❌ 子域名列表为空，请设置 SUB_DOMAINS")
         sys.exit(1)
 
-    # ---------- 第一步：检测 CF 域名 ----------
+    # 检测 CF 域名
     print("🔍 正在获取待检测域名列表...")
     all_domains = get_domains_from_url(EXTERNAL_DOMAINS_URL)
     print(f"✅ 共获取 {len(all_domains)} 个域名\n")
@@ -262,37 +247,28 @@ def main():
         print("❌ 没有找到任何 CF 域名，无法设置 CNAME，退出。")
         return
 
-    # ---------- 第二步：确定 CNAME 目标 ----------
     if AUTO_PICK:
-        pick_count = min(2, len(cf_domains))
-        cname_targets = random.sample(cf_domains, pick_count)
-        print(f"\n🎲 随机选用 {pick_count} 个 CF 域名作为 CNAME 目标: {cname_targets}")
+        print(f"\n🎲 自动随机模式：每个子域名将独立随机挑选 2 个 CF 域名")
     else:
         cname_targets = MANUAL_CF_TARGETS
         if not cname_targets:
             print("❌ 手动模式但未提供 MANUAL_CF_TARGETS，退出。")
             return
-        print(f"\n🎯 手动指定 CNAME 目标: {cname_targets}")
+        print(f"\n🎯 手动指定 CNAME 目标（所有子域名共用）: {cname_targets}")
 
-    # ---------- 第三步：为我方域名添加 CNAME ----------
     print(f"\n📋 主域名: {DOMAIN}")
     print(f"📋 子域名: {SUB_DOMAINS}")
-    print(f"📋 CNAME 目标: {cname_targets}")
 
-    if not DO_UPDATE:
-        print("\n⚠️  DO_UPDATE = False，仅展示模拟动作：")
-        for sub in SUB_DOMAINS:
-            print(f"    🧹 [模拟] 删除 {sub}.{DOMAIN} 的所有旧记录")
-            for target in cname_targets:
-                print(f"    ➕ [模拟] 创建 {sub}.{DOMAIN} CNAME -> {target}")
-        print("确认无误后，将环境变量 DO_UPDATE 设为 True 再次运行。")
-        return
-
-    # 真实执行
+    # 直接执行
     print("\n🔨 开始修改 DNS 记录...")
-    print(f"  🌍 处理域名: {DOMAIN}")
     for sub in SUB_DOMAINS:
-        ensure_cname_records(DOMAIN, sub, cname_targets, TENCENT_SECRET_ID, TENCENT_SECRET_KEY)
+        if AUTO_PICK:
+            pick_count = min(2, len(cf_domains))
+            targets = random.sample(cf_domains, pick_count)
+        else:
+            targets = cname_targets
+        print(f"  🌍 处理子域名: {sub}.{DOMAIN}，目标: {targets}")
+        ensure_cname_records(DOMAIN, sub, targets, TENCENT_SECRET_ID, TENCENT_SECRET_KEY)
     print("✅ 全部完成。")
 
 
