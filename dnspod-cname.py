@@ -6,7 +6,7 @@
 - 从外部 URL 获取域名列表，并发检测其 A 记录是否全部属于 CF
 - 随机选取两个全 CF 域名作为 CNAME 目标
 - 先删除子域名所有旧记录，再添加 CNAME
-- 配置通过环境变量传入
+- 配置：一个主域名 DOMAIN + 子域名列表 SUB_DOMAINS
 """
 
 import os
@@ -22,40 +22,32 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
-# ========== 环境变量配置（全部可配） ==========
+# ========== 环境变量配置（简洁版） ==========
+DOMAIN = os.environ.get("DOMAIN", "")                      # 你的主域名（仅一个）
+SUB_DOMAINS_STR = os.environ.get("SUB_DOMAINS", "1-1,1-2,2-1,2-2")
+SUB_DOMAINS = [s.strip() for s in SUB_DOMAINS_STR.split(",") if s.strip()]
+
 TENCENT_SECRET_ID = os.environ.get("TENCENT_SECRET_ID", "")
 TENCENT_SECRET_KEY = os.environ.get("TENCENT_SECRET_KEY", "")
 
-# 你自己的域名（逗号分隔）
-#MY_DOMAINS_STR = os.environ.get("DOMAIN")
-MY_DOMAINS = os.environ.get("DOMAIN")
-
-# 子域名列表（逗号分隔）
-#SUB_DOMAINS_STR = os.environ.get("SUB_DOMAINS", "1-1,1-2,2-1,2-2")
-SUB_DOMAINS = os.environ.get("SUB_DOMAINS", "1-1,1-2,2-1,2-2")
-
-# CNAME 目标选择模式
 AUTO_PICK = os.environ.get("AUTO_PICK_CF_TARGETS", "True").lower() in ("true", "1", "yes")
 MANUAL_TARGETS_STR = os.environ.get("MANUAL_CF_TARGETS", "")
 MANUAL_CF_TARGETS = [t.strip() for t in MANUAL_TARGETS_STR.split(",") if t.strip()] if MANUAL_TARGETS_STR else []
 
-# 是否真实更新 DNS
 DO_UPDATE = os.environ.get("DO_UPDATE", "true").lower() in ("true", "1", "yes")
 
-# 外部域名列表 URL
 EXTERNAL_DOMAINS_URL = os.environ.get(
     "EXTERNAL_DOMAINS_URL",
     "https://raw.githubusercontent.com/leung7963/CFIPS/main/domain.js"
 )
 
-# DNS 超时
 DNS_TIMEOUT = int(os.environ.get("DNS_TIMEOUT", "5"))
 socket.setdefaulttimeout(DNS_TIMEOUT)
 
 CF_IPV4_URL = 'https://www.cloudflare.com/ips-v4'
 
 
-# ========== 以下为功能函数 ==========
+# ========== 功能函数（保持不变） ==========
 def get_domains_from_url(url):
     """读取域名列表（每行一个域名，去重）"""
     resp = requests.get(url, timeout=15)
@@ -233,8 +225,8 @@ def main():
     if not TENCENT_SECRET_ID or not TENCENT_SECRET_KEY:
         print("❌ 请设置环境变量 TENCENT_SECRET_ID 和 TENCENT_SECRET_KEY")
         sys.exit(1)
-    if not MY_DOMAINS:
-        print("❌ 请设置环境变量 MY_DOMAINS（你的腾讯云域名，逗号分隔）")
+    if not DOMAIN:
+        print("❌ 请设置环境变量 DOMAIN（你的主域名）")
         sys.exit(1)
     if not SUB_DOMAINS:
         print("❌ 子域名列表为空，请设置 SUB_DOMAINS")
@@ -283,26 +275,24 @@ def main():
         print(f"\n🎯 手动指定 CNAME 目标: {cname_targets}")
 
     # ---------- 第三步：为我方域名添加 CNAME ----------
-    print(f"\n📋 你的腾讯云域名: {MY_DOMAINS}")
+    print(f"\n📋 主域名: {DOMAIN}")
     print(f"📋 子域名: {SUB_DOMAINS}")
     print(f"📋 CNAME 目标: {cname_targets}")
 
     if not DO_UPDATE:
         print("\n⚠️  DO_UPDATE = False，仅展示模拟动作：")
-        for mydomain in MY_DOMAINS:
-            for sub in SUB_DOMAINS:
-                print(f"    🧹 [模拟] 删除 {sub}.{mydomain} 的所有旧记录")
-                for target in cname_targets:
-                    print(f"    ➕ [模拟] 创建 {sub}.{mydomain} CNAME -> {target}")
+        for sub in SUB_DOMAINS:
+            print(f"    🧹 [模拟] 删除 {sub}.{DOMAIN} 的所有旧记录")
+            for target in cname_targets:
+                print(f"    ➕ [模拟] 创建 {sub}.{DOMAIN} CNAME -> {target}")
         print("确认无误后，将环境变量 DO_UPDATE 设为 True 再次运行。")
         return
 
     # 真实执行
     print("\n🔨 开始修改 DNS 记录...")
-    for mydomain in MY_DOMAINS:
-        print(f"  🌍 处理你的域名: {mydomain}")
-        for sub in SUB_DOMAINS:
-            ensure_cname_records(mydomain, sub, cname_targets, TENCENT_SECRET_ID, TENCENT_SECRET_KEY)
+    print(f"  🌍 处理域名: {DOMAIN}")
+    for sub in SUB_DOMAINS:
+        ensure_cname_records(DOMAIN, sub, cname_targets, TENCENT_SECRET_ID, TENCENT_SECRET_KEY)
     print("✅ 全部完成。")
 
 
