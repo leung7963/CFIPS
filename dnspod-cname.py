@@ -27,12 +27,12 @@ TENCENT_SECRET_ID = os.environ.get("TENCENT_SECRET_ID", "")
 TENCENT_SECRET_KEY = os.environ.get("TENCENT_SECRET_KEY", "")
 
 # 你自己的域名（逗号分隔）
-MY_DOMAINS_STR = os.environ.get("DOMAIN")
+#MY_DOMAINS_STR = os.environ.get("DOMAIN")
 MY_DOMAINS = os.environ.get("DOMAIN")
 
 # 子域名列表（逗号分隔）
 #SUB_DOMAINS_STR = os.environ.get("SUB_DOMAINS", "1-1,1-2,2-1,2-2")
-SUB_DOMAINS = [s.strip() for s in SUB_DOMAINS_STR.split(",") if s.strip()]
+SUB_DOMAINS = os.environ.get("SUB_DOMAINS", "1-1,1-2,2-1,2-2")
 
 # CNAME 目标选择模式
 AUTO_PICK = os.environ.get("AUTO_PICK_CF_TARGETS", "True").lower() in ("true", "1", "yes")
