@@ -31,7 +31,7 @@ SUB_DOMAINS = os.environ.get("SUB_DOMAINS", "1-1,1-2,2-1,2-2").split(",")
 # 外部域名列表 URL（每行一个域名）
 EXTERNAL_DOMAINS_URL = os.environ.get(
     "EXTERNAL_DOMAINS_URL",
-    "https://euserv.0662.ip-ddns.com/domain.txt"
+    "https://raw.githubusercontent.com/leung7963/CFIPS/main/domain.js"
 )
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
