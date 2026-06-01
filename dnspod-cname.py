@@ -2,10 +2,11 @@
 # -*- coding: utf-8 -*-
 
 """
-外部域名 Cloudflare CNAME 工具
+外部域名 Cloudflare CNAME 工具（限制每个优选子域名最多 2 个外部域名）
 - 从外部 URL 获取域名列表
 - 检测每个域名的 A 记录 IP 是否属于 Cloudflare
-- 若属于 Cloudflare IP，则删除原 A 记录，添加 CNAME 到指定优选子域名（轮询分配）
+- 若属于 Cloudflare IP，则先删除该域名的所有现有记录，再添加 CNAME 到指定优选子域名
+- 每个优选子域名最多被 2 个外部域名指向（轮询分配直到配额用尽）
 - 支持 Telegram 通知
 """
 
@@ -27,6 +28,9 @@ DOMAIN = os.environ.get("DOMAIN")
 
 # 用于 CNAME 轮询的优选子域名列表
 SUB_DOMAINS = os.environ.get("SUB_DOMAINS", "1-1,1-2,2-1,2-2").split(",")
+
+# 每个优选子域名最多被几个外部域名 CNAME 指向
+MAX_CNAME_PER_SUB = 2
 
 # 外部域名列表 URL（每行一个域名）
 EXTERNAL_DOMAINS_URL = os.environ.get(
@@ -75,7 +79,7 @@ def sign_v3(service: str, action: str, version: str, payload: dict,
     }
     return headers, payload_str
 
-# ========== Cloudflare IP 检测类（仅保留 CIDR 获取与判断） ==========
+# ========== Cloudflare IP 检测类 ==========
 class CloudflareIPChecker:
     def __init__(self):
         self._ipv4_cidrs = []
@@ -89,7 +93,6 @@ class CloudflareIPChecker:
             resp_v4 = self.session.get("https://www.cloudflare.com/ips-v4", timeout=15)
             resp_v4.raise_for_status()
             self._ipv4_cidrs = [line.strip() for line in resp_v4.text.splitlines() if line.strip()]
-            # 也可排除某些段，如按需过滤
         except Exception as e:
             print(f"获取 IPv4 CIDR 失败: {e}")
             return False
@@ -100,7 +103,6 @@ class CloudflareIPChecker:
             self._ipv6_cidrs = [line.strip() for line in resp_v6.text.splitlines() if line.strip()]
         except Exception as e:
             print(f"获取 IPv6 CIDR 失败: {e}")
-            # 非致命，可能只用 IPv4
 
         return bool(self._ipv4_cidrs)
 
@@ -134,17 +136,16 @@ class TencentDNSManager:
         records = list_resp.get("Response", {}).get("RecordList", [])
         return [r for r in records if r.get("Type") == "A"]
 
-    def delete_records_by_type(self, domain: str, sub: str, record_type: str):
-        """删除指定类型的所有记录（避免冲突）"""
+    def delete_all_records(self, domain: str, sub: str = "@"):
+        """删除指定子域名的所有记录（A、AAAA、CNAME 等），确保无残留"""
         list_resp = self._call_api("DescribeRecordList", {"Domain": domain, "Subdomain": sub})
         records = list_resp.get("Response", {}).get("RecordList", [])
         for r in records:
-            if r.get("Type") == record_type:
-                self._call_api("DeleteRecord", {"Domain": domain, "RecordId": r.get("RecordId")})
-                print(f"  已删除 {record_type} 记录: {r.get('Name')}.{domain}")
+            print(f"  正在删除记录: {r.get('Name')}.{domain} 类型: {r.get('Type')}")
+            self._call_api("DeleteRecord", {"Domain": domain, "RecordId": r.get("RecordId")})
 
-    def add_cname_record(self, domain: str, sub: str, target: str, line: str = "默认"):
-        """添加 CNAME 记录"""
+    def add_cname_record(self, domain: str, sub: str, target: str, line: str = "默认") -> bool:
+        """添加 CNAME 记录，返回是否成功"""
         payload = {
             "Domain": domain,
             "SubDomain": sub,
@@ -175,12 +176,11 @@ class NotificationManager:
 
 # ========== 外部域名获取 ==========
 def fetch_external_domains(url: str) -> List[str]:
-    """从 URL 获取域名列表，每行一个，去重并过滤空行"""
+    """从 URL 获取域名列表，每行一个，去重并过滤"""
     try:
         resp = requests.get(url, timeout=15)
         resp.raise_for_status()
         lines = [line.strip().lower() for line in resp.text.splitlines() if line.strip()]
-        # 基本格式过滤：至少包含一个点
         domains = [d for d in lines if '.' in d]
         return list(set(domains))
     except Exception as e:
@@ -192,23 +192,21 @@ def main():
     requests.packages.urllib3.disable_warnings()
     print("=" * 60)
     print("外部域名 Cloudflare CNAME 工具")
+    print(f"每个优选子域名最多指向 {MAX_CNAME_PER_SUB} 个外部域名")
     print("=" * 60)
 
     if not TENCENT_SECRET_ID or not TENCENT_SECRET_KEY or not DOMAIN:
         print("错误：缺少必要环境变量 TENCENT_SECRET_ID / TENCENT_SECRET_KEY / DOMAIN")
         sys.exit(1)
 
-    # 初始化
     cf_checker = CloudflareIPChecker()
     dns_mgr = TencentDNSManager(TENCENT_SECRET_ID, TENCENT_SECRET_KEY)
     notifier = NotificationManager()
 
-    # 获取 Cloudflare IP 范围（用于后续判断）
     if not cf_checker.fetch_cidrs():
         print("无法获取 Cloudflare IP 范围，退出。")
         sys.exit(1)
 
-    # 获取外部域名列表
     external_domains = fetch_external_domains(EXTERNAL_DOMAINS_URL)
     if not external_domains:
         print("未获取到任何外部域名，退出。")
@@ -216,48 +214,65 @@ def main():
 
     print(f"获取到 {len(external_domains)} 个外部域名，开始检测并设置 CNAME...")
 
-    # 处理结果记录
+    # 子域名配额计数
+    sub_usage = {sub: 0 for sub in SUB_DOMAINS}
     results = []
-    subdomain_cycle = 0  # 轮询索引
+    current_index = 0
 
     for ext_domain in external_domains:
         print(f"\n处理域名: {ext_domain}")
         try:
-            # 1. 获取该域名的 A 记录（@ 记录）
+            # 1. 获取 A 记录（用于判断 IP）
             a_records = dns_mgr.get_a_records(ext_domain, sub="@")
             if not a_records:
                 results.append(f"  {ext_domain}: 无 A 记录，跳过")
                 continue
 
-            # 2. 检查第一个 A 记录的 IP 是否属于 Cloudflare
             first_ip = a_records[0].get("Value", "")
             if not first_ip:
                 results.append(f"  {ext_domain}: A 记录无 IP 值，跳过")
                 continue
 
-            if cf_checker.is_cloudflare_ip(first_ip):
-                # 3. 删除原有 A 记录
-                dns_mgr.delete_records_by_type(ext_domain, "@", "A")
-                # 4. 选择轮询的优选子域名
-                target_sub = SUB_DOMAINS[subdomain_cycle % len(SUB_DOMAINS)]
-                subdomain_cycle += 1
-                cname_target = f"{target_sub}.{DOMAIN}."
-                # 5. 添加 CNAME 记录
-                success = dns_mgr.add_cname_record(ext_domain, "@", cname_target)
-                if success:
-                    results.append(f"  ✅ {ext_domain} → CNAME {cname_target}")
-                else:
-                    results.append(f"  ❌ {ext_domain} CNAME 添加失败")
-            else:
+            # 2. 判断是否 Cloudflare IP
+            if not cf_checker.is_cloudflare_ip(first_ip):
                 results.append(f"  ⚠️ {ext_domain}: IP {first_ip} 不是 Cloudflare IP，跳过")
+                continue
+
+            # 3. 查找一个未满的子域名
+            target_sub = None
+            for i in range(len(SUB_DOMAINS)):
+                idx = (current_index + i) % len(SUB_DOMAINS)
+                if sub_usage[SUB_DOMAINS[idx]] < MAX_CNAME_PER_SUB:
+                    target_sub = SUB_DOMAINS[idx]
+                    current_index = (idx + 1) % len(SUB_DOMAINS)  # 下次从这里开始
+                    break
+
+            if target_sub is None:
+                results.append(f"  ❌ {ext_domain}: 所有优选子域名配额已满（每个 {MAX_CNAME_PER_SUB} 个），跳过")
+                continue
+
+            # 4. 删除原有所有记录（先清空，避免冲突）
+            dns_mgr.delete_all_records(ext_domain, "@")
+
+            # 5. 添加 CNAME
+            cname_target = f"{target_sub}.{DOMAIN}."
+            success = dns_mgr.add_cname_record(ext_domain, "@", cname_target)
+
+            if success:
+                sub_usage[target_sub] += 1
+                results.append(f"  ✅ {ext_domain} → CNAME {cname_target} (子域名 {target_sub} 已用 {sub_usage[target_sub]}/{MAX_CNAME_PER_SUB})")
+            else:
+                results.append(f"  ❌ {ext_domain} CNAME 添加失败")
         except Exception as e:
             results.append(f"  ❌ {ext_domain}: 处理异常 - {e}")
 
     # 生成报告
+    usage_report = "\n".join([f"  {sub}.{DOMAIN} : {count}/{MAX_CNAME_PER_SUB}" for sub, count in sub_usage.items()])
     report_lines = [
         f"<b>外部域名 CNAME 处理报告</b>",
         f"目标根域名: {DOMAIN}",
-        f"优选子域名: {', '.join(SUB_DOMAINS)}",
+        f"优选子域名限额（每个最多 {MAX_CNAME_PER_SUB} 个域名）:",
+        usage_report,
         f"时间: {time.strftime('%Y-%m-%d %H:%M:%S')}",
         "",
         "处理结果:"
