@@ -24,3 +24,12 @@ cf.877774.xyz
 saas.sin.fan
 bestcf.030101.xyz
 cf.cloudflare.182682.xyz
+doro.lol
+1749991941.bilibiliapp.cn
+0.5.0.0.7.0.f.1.0.7.4.0.1.0.0.2.xzhi.eu.org
+animal.nuaa.tech
+nas.chinwa.eu.cc
+f.lma.de5.net
+1757760858.tencentapp.cn
+p.etime.vip
+so.360832.xyz
