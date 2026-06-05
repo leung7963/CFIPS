@@ -2,7 +2,7 @@ name: 更新 Cloudflare 优选 域名 到腾讯云 DNS
 
 on:
   schedule:
-    - cron: '0 0 * * *'
+    - cron: '0 * * * *'
   workflow_dispatch:      # 允许手动触发
 
 jobs:
