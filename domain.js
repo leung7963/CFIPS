@@ -12,7 +12,7 @@ time.is.cdn.cloudflare.net
 ip.skk.moe.cdn.cloudflare.net
 linux.do.cdn.cloudflare.net
 pipecdn.vip.cdn.cloudflare.net
-global.dudupro.com.cdn.cloudflare.net
+global.dudupro.com
 youxuan.cf.090227.xyz
 mfa.gov.ua
 www.visa.cn
@@ -22,7 +22,6 @@ staticdelivery.nexusmods.com
 icook.hk
 icook.tw
 cf.tencentapp.cn
-cloudflare-dl.byoip.top
 cf.877774.xyz
 saas.sin.fan
 bestcf.030101.xyz
@@ -33,10 +32,7 @@ cdns.doon.eu.org
 cf.0sm.com
 cf.877771.xyz
 cf.877774.xyz
-cf.900501.xyz
 cfip.1323123.xyz
-cfip.cfcdn.vip
-cfip.xxxxxxxx.tk
 cloudflare.182682.xyz
 cloudflare-dl.byoip.top
 cloudflare-ip.mofashi.ltd
@@ -45,6 +41,4 @@ freeyx.cloudflare88.eu.org
 nrt.xxxxxxxx.nyc.mn
 nrtcfdns.zone.id
 saas.sin.fan
-tencentapp.cn
 xn--b6gac.eu.org
-777.ai7777777.xyz
