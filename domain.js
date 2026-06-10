@@ -35,8 +35,6 @@ cloudflare.182682.xyz
 cloudflare-ip.mofashi.ltd
 fn.130519.xyz
 freeyx.cloudflare88.eu.org
-nrt.xxxxxxxx.nyc.mn
-nrtcfdns.zone.id
 xn--b6gac.eu.org
 spring.io
 jp.cf.3666888.xyz
