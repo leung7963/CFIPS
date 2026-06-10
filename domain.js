@@ -22,11 +22,9 @@ staticdelivery.nexusmods.com
 icook.hk
 icook.tw
 cf.tencentapp.cn
-cf.877774.xyz
 saas.sin.fan
 bestcf.030101.xyz
 cf.cloudflare.182682.xyz
-bestcf.030101.xyz
 cdn.2020111.xyz
 cdns.doon.eu.org
 cf.0sm.com
@@ -34,11 +32,9 @@ cf.877771.xyz
 cf.877774.xyz
 cfip.1323123.xyz
 cloudflare.182682.xyz
-cloudflare-dl.byoip.top
 cloudflare-ip.mofashi.ltd
 fn.130519.xyz
 freeyx.cloudflare88.eu.org
 nrt.xxxxxxxx.nyc.mn
 nrtcfdns.zone.id
-saas.sin.fan
 xn--b6gac.eu.org
