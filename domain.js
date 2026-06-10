@@ -38,3 +38,4 @@ freeyx.cloudflare88.eu.org
 nrt.xxxxxxxx.nyc.mn
 nrtcfdns.zone.id
 xn--b6gac.eu.org
+spring.io
