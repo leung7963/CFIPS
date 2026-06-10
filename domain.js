@@ -9,4 +9,5 @@ chain.so.cdn.cloudflare.net
 ip.sb.cdn.cloudflare.net
 see.you.cdn.cloudflare.net
 time.is.cdn.cloudflare.net
-ip.skk.moe
+ip.skk.moe.cdn.cloudflare.net
+linux.do.cdn.cloudflare.net
