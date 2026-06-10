@@ -42,3 +42,6 @@ spring.io
 jp.cf.3666888.xyz
 gh-proxy.com
 yg9.ygkkk.dpdns.org
+www.fastsoso.cn
+bbs.alipansou.com
+openai.com
