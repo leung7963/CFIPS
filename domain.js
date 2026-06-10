@@ -12,3 +12,4 @@ time.is.cdn.cloudflare.net
 ip.skk.moe.cdn.cloudflare.net
 linux.do.cdn.cloudflare.net
 pipecdn.vip.cdn.cloudflare.net
+global.dudupro.com.cdn.cloudflare.net
