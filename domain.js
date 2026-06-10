@@ -39,3 +39,6 @@ nrt.xxxxxxxx.nyc.mn
 nrtcfdns.zone.id
 xn--b6gac.eu.org
 spring.io
+jp.cf.3666888.xyz
+gh-proxy.com
+yg9.ygkkk.dpdns.org
