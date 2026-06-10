@@ -8,10 +8,4 @@ global-cdn.me.cdn.cloudflare.net
 chain.so.cdn.cloudflare.net
 ip.sb.cdn.cloudflare.net
 see.you.cdn.cloudflare.net
-sm.ms.cdn.cloudflare.net
-fs.to
-fileshare.to.cdn.cloudflare.net
-filesharing.to.cdn.cloudflare.net
-seecdn.com.cdn.cloudflare.net
-seecdn.net.cdn.cloudflare.net
-seeusercontent.com.cdn.cloudflare.net
+time.is.cdn.cloudflare.net
