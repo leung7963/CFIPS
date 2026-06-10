@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-将你腾讯云域名下的每个子域名分配两个不重复的全 Cloudflare 域名作为 CNAME
+将你腾讯云域名下的每个子域名分配一个全 Cloudflare 域名作为 CNAME
 - 从外部 URL 获取域名列表，检测 A 记录是否全部属于 CF
-- 将可用 CF 域名随机打乱，按顺序为每个子域名分配两个（域名不重复）
+- 将可用 CF 域名按顺序为每个子域名分配一个（域名不重复）
 - 先删除子域名所有旧记录，再添加 CNAME
 - 支持 Telegram 通知（报告执行结果）
 """
@@ -17,7 +17,6 @@ import hashlib
 import hmac
 import time
 import json
-import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
@@ -29,10 +28,6 @@ SUB_DOMAINS = [s.strip() for s in SUB_DOMAINS_STR.split(",") if s.strip()]
 
 TENCENT_SECRET_ID = os.environ.get("TENCENT_SECRET_ID", "")
 TENCENT_SECRET_KEY = os.environ.get("TENCENT_SECRET_KEY", "")
-
-AUTO_PICK = os.environ.get("AUTO_PICK_CF_TARGETS", "True").lower() in ("true", "1", "yes")
-MANUAL_TARGETS_STR = os.environ.get("MANUAL_CF_TARGETS", "")
-MANUAL_CF_TARGETS = [t.strip() for t in MANUAL_TARGETS_STR.split(",") if t.strip()] if MANUAL_TARGETS_STR else []
 
 EXTERNAL_DOMAINS_URL = os.environ.get(
     "EXTERNAL_DOMAINS_URL",
@@ -232,7 +227,6 @@ def ensure_cname_records(mydomain, sub_domain, cname_targets, secret_id, secret_
 def main():
     # 用于构建通知消息的日志列表
     log_lines = []
-    start_time = time.strftime('%Y-%m-%d %H:%M:%S')
 
     if not TENCENT_SECRET_ID or not TENCENT_SECRET_KEY:
         print("❌ 请设置环境变量 TENCENT_SECRET_ID 和 TENCENT_SECRET_KEY")
@@ -275,34 +269,25 @@ def main():
         send_telegram("\n".join(log_lines))
         return
 
-    # 准备目标分配
-    if AUTO_PICK:
-        needed = len(SUB_DOMAINS) * 2
-        if len(cf_domains) < needed:
-            msg = f"❌ CF 域名数量不足：需要 {needed} 个，实际 {len(cf_domains)} 个，无法为每个子域名分配 2 个不重复域名，退出。"
-            print(msg)
-            log_lines.append(msg)
-            send_telegram("\n".join(log_lines))
-            return
-        shuffled = cf_domains.copy()
-        random.shuffle(shuffled)
-        targets_map = {}
-        idx = 0
-        for sub in SUB_DOMAINS:
-            targets_map[sub] = shuffled[idx:idx+2]
-            idx += 2
-        print(f"\n🎲 已为每个子域名分配不重复的 CF 域名对：")
-        log_lines.append("自动分配结果：")
-        for sub, targets in targets_map.items():
-            line = f"  {sub}.{DOMAIN} -> {targets}"
-            print(line)
-            log_lines.append(line)
-    else:
-        targets_map = {sub: MANUAL_CF_TARGETS for sub in SUB_DOMAINS}
-        print(f"\n🎯 手动指定 CNAME 目标（所有子域名共用）: {MANUAL_CF_TARGETS}")
-        log_lines.append(f"手动目标：{MANUAL_CF_TARGETS}")
+    # 按顺序为每个子域名分配一个 CNAME（域名不重复）
+    targets_map = {}
+    for i, sub in enumerate(SUB_DOMAINS):
+        if i < len(cf_domains):
+            targets_map[sub] = [cf_domains[i]]
+        else:
+            targets_map[sub] = []   # CF 域名不够，该子域名不设置 CNAME
 
-    # 直接执行修改
+    print(f"\n📋 按顺序为子域名分配 CNAME（每个子域名最多一个）：")
+    log_lines.append("分配结果：")
+    for sub, targets in targets_map.items():
+        if targets:
+            line = f"  {sub}.{DOMAIN} -> {targets[0]}"
+        else:
+            line = f"  {sub}.{DOMAIN} -> 无可用 CF 域名，跳过"
+        print(line)
+        log_lines.append(line)
+
+    # 修改 DNS 记录
     print("\n🔨 开始修改 DNS 记录...")
     summary = []
     for sub in SUB_DOMAINS:
