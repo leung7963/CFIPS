@@ -218,7 +218,7 @@ def ensure_cname_records(mydomain, sub_domain, cname_targets, secret_id, secret_
             'RecordType': 'CNAME',
             'RecordLine': '默认',
             'Value': target,
-            'TTL': 600
+            'TTL': 86400
         }
         create_resp = dnspod_api_call('CreateRecord', create_params, secret_id, secret_key)
         if 'Response' in create_resp and 'Error' not in create_resp['Response']:
