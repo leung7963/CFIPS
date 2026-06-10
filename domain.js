@@ -11,3 +11,4 @@ see.you.cdn.cloudflare.net
 time.is.cdn.cloudflare.net
 ip.skk.moe.cdn.cloudflare.net
 linux.do.cdn.cloudflare.net
+pipecdn.vip.cdn.cloudflare.net
