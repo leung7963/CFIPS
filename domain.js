@@ -1,9 +1,1 @@
 cdns.doon.eu.org
-ping.pe
-block.io
-chain.so
-spring.io
-youxuan.cf.090227.xyz
-cf.tencentapp.cn
-cf.cloudflare.182682.xyz
-saas.sin.fan
