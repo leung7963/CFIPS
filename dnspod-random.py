@@ -5,7 +5,8 @@
 Cloudflare 优选 IP 生成器 + 腾讯云 DNS 更新 (固定子域名版本)
 - 生成固定子域名：ct1, ct2, cu1, cu2, cmcc1, cmcc2
 - 每个子域名分配 2 个优选 IP（线路为“默认”）
-- IPv4 / IPv6 均支持
+- IPv4 可选段通过环境变量 ALLOWED_IPV4_PREFIXES 配置（默认: 104.,172.）
+- IPv6 支持
 - 包含 Telegram 通知
 """
 
@@ -18,7 +19,6 @@ import hashlib
 import hmac
 import ipaddress
 import requests
-import traceback
 from typing import List, Dict, Tuple, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -37,6 +37,11 @@ REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "5"))
 MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "500"))
 ATTEMPT_MULTIPLIER = int(os.environ.get("ATTEMPT_MULTIPLIER", "10000"))
 GENERATE_IPV6 = os.environ.get("GENERATE_IPV6", "true").lower() == "true"
+
+# 允许的 IPv4 段（逗号分隔的前缀列表，例如: "104.,172."）
+ALLOWED_IPV4_PREFIXES = [
+    p.strip() for p in os.environ.get("ALLOWED_IPV4_PREFIXES", "172.").split(",") if p.strip()
+]
 
 CF_IPV4_URL = "https://www.cloudflare.com/ips-v4"
 CF_IPV6_URL = "https://www.cloudflare.com/ips-v6"
@@ -96,8 +101,11 @@ class CloudflareIPManager:
                 return []
         
         raw_ipv4_cidrs = get_cidrs(CF_IPV4_URL, 4)
-        # 排除 104 段（但原注释写排除188？保留原样，但修正为104）
-        self._ipv4_cidrs = [cidr for cidr in raw_ipv4_cidrs if not cidr.startswith("14.")]
+        # 仅保留允许的前缀段（通过 ALLOWED_IPV4_PREFIXES 环境变量配置）
+        self._ipv4_cidrs = [
+            cidr for cidr in raw_ipv4_cidrs
+            if any(cidr.startswith(prefix) for prefix in ALLOWED_IPV4_PREFIXES)
+        ]
         
         if GENERATE_IPV6: 
             self._ipv6_cidrs = get_cidrs(CF_IPV6_URL, 6)
@@ -199,9 +207,12 @@ def distribute_to_subdomains(ip_pool: List[str]) -> Dict[str, List[str]]:
 # ========== 主程序 ==========
 def main():
     requests.packages.urllib3.disable_warnings()
+    # 构建允许段描述
+    ipv4_desc = "、".join(ALLOWED_IPV4_PREFIXES) if ALLOWED_IPV4_PREFIXES else "全部"
     print("=" * 60)
     print("Cloudflare 优选 IP 生成器 (固定子域名版本)")
     print(f"子域名列表: {SUB_DOMAINS} | 每个子域名 {IPS_PER_SUBDOMAIN} 个 IP")
+    print(f"IPv4 段: {ipv4_desc} 开头")
     print("=" * 60)
 
     if not TENCENT_SECRET_ID or not TENCENT_SECRET_KEY or not DOMAIN:
@@ -224,6 +235,7 @@ def main():
         f"<b>Cloudflare 优选报告 (固定子域名)</b>",
         f"域名: {DOMAIN}",
         f"时间: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"IPv4 范围: {ipv4_desc} 段",
         f""
     ]
 
@@ -232,10 +244,8 @@ def main():
     v4_details = ""
     if NEEDED_IPV4 > 0:
         if len(ipv4_pool) >= NEEDED_IPV4:
-            # 删除旧 A 记录
             for sub in SUB_DOMAINS:
                 dns_manager.delete_records_by_subdomain_and_type(DOMAIN, sub, 'A')
-            # 分配并添加
             dist = distribute_to_subdomains(ipv4_pool)
             for sub, ips in dist.items():
                 for ip in ips:
