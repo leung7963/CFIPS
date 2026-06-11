@@ -1,3 +1,5 @@
+cf.0662.kdns.fr
+cf.0662.de5.net
 cdns.doon.eu.org
 ping.pe
 block.io
@@ -7,4 +9,3 @@ youxuan.cf.090227.xyz
 cf.tencentapp.cn
 cf.cloudflare.182682.xyz
 saas.sin.fan
-www.dbs.com
