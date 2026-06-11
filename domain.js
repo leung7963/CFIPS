@@ -4,7 +4,6 @@ chain.so
 ip.sb
 nodeseek.com.cdn.cloudflare.net
 global-cdn.me
-time.is
 huaren.live
 uvod.tv
 storage.to
