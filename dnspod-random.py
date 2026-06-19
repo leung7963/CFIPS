@@ -3,9 +3,10 @@
 
 """
 Cloudflare 优选 IP 生成器 + 腾讯云 DNS 更新 (固定子域名版本)
-- 生成固定子域名：1-1, 1-2, 2-1, 2-2
+- 生成固定子域名：1-1-1, 1-1-2, 1-2-1, 1-2-2, 2-1-1, 2-1-2, 2-2-1, 2-2-2
 - 每个子域名分配 2 个优选 IP（线路为“默认”）
-- IPv4 可选段通过环境变量 ALLOWED_IPV4_PREFIXES 配置（默认: 104.26）
+- IPv4 可选段通过环境变量 ALLOWED_IPV4_PREFIXES 配置（默认为 104.26.,172.67.），
+  现在代表“生成 IP 的前缀”而非 CIDR 前缀。
 - 已移除 IPv6 支持
 - 包含 Telegram 通知
 """
@@ -28,7 +29,7 @@ TENCENT_SECRET_KEY = os.environ.get("TENCENT_SECRET_KEY")
 DOMAIN = os.environ.get("DOMAIN")
 
 # 固定子域名及每条记录的 IP 数量
-SUB_DOMAINS = ['1-1-1', '1-1-2', '1-2-1', '1-2-2', '2-1-1', '2-1-2', '2-2-1', '2-2-2',]
+SUB_DOMAINS = ['1-1-1', '1-1-2', '1-2-1', '1-2-2', '2-1-1', '2-1-2', '2-2-1', '2-2-2']
 IPS_PER_SUBDOMAIN = 2   # 每个子域名分配 2 个 IP
 
 TEST_URL_TEMPLATE = os.environ.get("TEST_URL_TEMPLATE", "http://{ip}:443/")
@@ -37,7 +38,7 @@ REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "5"))
 MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "500"))
 ATTEMPT_MULTIPLIER = int(os.environ.get("ATTEMPT_MULTIPLIER", "10000"))
 
-# 允许的 IPv4 段（逗号分隔的前缀列表，例如: "104.,172."）
+# 允许的 IPv4 段 —— 现在代表“生成的 IP 地址的前缀”，例如 "104.26." 会匹配 104.26.x.x
 ALLOWED_IPV4_PREFIXES = [
     p.strip() for p in os.environ.get("ALLOWED_IPV4_PREFIXES", "104.26.,172.67.").split(",") if p.strip()
 ]
@@ -87,7 +88,7 @@ class CloudflareIPManager:
         self._ipv4_cidrs = []
 
     def fetch_cloudflare_ips(self) -> bool:
-        """仅获取 IPv4 CIDR 列表"""
+        """获取 Cloudflare 所有 IPv4 CIDR 列表（不过滤，全部保留）"""
         try:
             response = self.session.get(CF_IPV4_URL, timeout=15)
             response.raise_for_status()
@@ -96,12 +97,15 @@ class CloudflareIPManager:
             print(f"获取 IPv4 CIDR 失败: {e}")
             return False
 
-        # 仅保留允许的前缀段
-        self._ipv4_cidrs = [
-            cidr for cidr in raw_ipv4_cidrs
-            if any(cidr.startswith(prefix) for prefix in ALLOWED_IPV4_PREFIXES)
-        ]
+        self._ipv4_cidrs = raw_ipv4_cidrs  # 保留全部 CIDR，不再按前缀筛选
+        print(f"获取到 {len(self._ipv4_cidrs)} 个 Cloudflare IPv4 段")
         return bool(self._ipv4_cidrs)
+
+    def _ip_matches_allowed_prefix(self, ip: str) -> bool:
+        """检查 IP 是否以允许的前缀开头，若未配置前缀则全部通过"""
+        if not ALLOWED_IPV4_PREFIXES:
+            return True
+        return any(ip.startswith(prefix) for prefix in ALLOWED_IPV4_PREFIXES)
 
     def generate_random_ip_from_cidr(self, cidr: str) -> Optional[str]:
         """从 CIDR 中随机生成一个 IPv4 地址"""
@@ -124,7 +128,7 @@ class CloudflareIPManager:
             return ip_address, False, 0
 
     def generate_and_test_ips_concurrent(self, num_ips: int) -> List[str]:
-        """生成并测试指定数量的优质 IPv4"""
+        """生成并测试指定数量的优质 IPv4，仅保留符合 IP 前缀的地址"""
         if num_ips <= 0:
             return []
         qualified_ips, attempted_ips = [], set()
@@ -142,8 +146,10 @@ class CloudflareIPManager:
                     if ip and ip not in attempted_ips:
                         attempted_ips.add(ip)
                         max_attempts -= 1
-                        future_to_ip[executor.submit(self.test_ip_worker, ip)] = ip
-                        return True
+                        # 只测试符合 IP 前缀的地址
+                        if self._ip_matches_allowed_prefix(ip):
+                            future_to_ip[executor.submit(self.test_ip_worker, ip)] = ip
+                            return True
                 return False
 
             # 初始填充任务
@@ -218,7 +224,7 @@ def main():
     print("=" * 60)
     print("Cloudflare 优选 IP 生成器 (仅 IPv4)")
     print(f"子域名列表: {SUB_DOMAINS} | 每个子域名 {IPS_PER_SUBDOMAIN} 个 IP")
-    print(f"IPv4 段: {ipv4_desc} 开头")
+    print(f"IP 前缀限制: {ipv4_desc} 开头（基于生成的 IP 地址筛选）")
     print("=" * 60)
 
     if not TENCENT_SECRET_ID or not TENCENT_SECRET_KEY or not DOMAIN:
@@ -240,7 +246,7 @@ def main():
         f"<b>Cloudflare 优选报告 (仅 IPv4)</b>",
         f"域名: {DOMAIN}",
         f"时间: {time.strftime('%Y-%m-%d %H:%M:%S')}",
-        f"IPv4 范围: {ipv4_desc} 段",
+        f"IP 前缀: {ipv4_desc}",
         f""
     ]
 
@@ -267,4 +273,10 @@ def main():
     notifier.send_telegram(final_text)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        print(f"未捕获异常: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
