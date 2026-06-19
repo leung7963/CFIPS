@@ -3,10 +3,10 @@
 
 """
 Cloudflare 优选 IP 生成器 + 腾讯云 DNS 更新 (固定子域名版本)
-- 生成固定子域名：ct1, ct2, cu1, cu2, cmcc1, cmcc2
+- 生成固定子域名：1-1, 1-2, 2-1, 2-2
 - 每个子域名分配 2 个优选 IP（线路为“默认”）
-- IPv4 可选段通过环境变量 ALLOWED_IPV4_PREFIXES 配置（默认: 104.,172.）
-- IPv6 支持
+- IPv4 可选段通过环境变量 ALLOWED_IPV4_PREFIXES 配置（默认: 104.26）
+- 已移除 IPv6 支持
 - 包含 Telegram 通知
 """
 
@@ -36,7 +36,6 @@ EXPECTED_STATUS_CODE = int(os.environ.get("EXPECTED_STATUS_CODE", "400"))
 REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "5"))
 MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "500"))
 ATTEMPT_MULTIPLIER = int(os.environ.get("ATTEMPT_MULTIPLIER", "10000"))
-GENERATE_IPV6 = os.environ.get("GENERATE_IPV6", "true").lower() == "true"
 
 # 允许的 IPv4 段（逗号分隔的前缀列表，例如: "104.,172."）
 ALLOWED_IPV4_PREFIXES = [
@@ -44,14 +43,12 @@ ALLOWED_IPV4_PREFIXES = [
 ]
 
 CF_IPV4_URL = "https://www.cloudflare.com/ips-v4"
-CF_IPV6_URL = "https://www.cloudflare.com/ips-v6"
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-# 计算所需 IP 总数
+# 计算所需 IP 总数（仅 IPv4）
 NEEDED_IPV4 = len(SUB_DOMAINS) * IPS_PER_SUBDOMAIN
-NEEDED_IPV6 = NEEDED_IPV4 if GENERATE_IPV6 else 0
 
 # ========== 腾讯云 API 签名函数 ==========
 def sign_v3(service: str, action: str, version: str, payload: dict,
@@ -88,58 +85,60 @@ class CloudflareIPManager:
         self.session = requests.Session()
         self.session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) CF-Optimizer/1.0'})
         self._ipv4_cidrs = []
-        self._ipv6_cidrs = []
 
     def fetch_cloudflare_ips(self) -> bool:
-        def get_cidrs(url: str, version: int) -> List[str]:
-            try:
-                response = self.session.get(url, timeout=15)
-                response.raise_for_status()
-                return [line.strip() for line in response.text.splitlines() if line.strip()]
-            except Exception as e:
-                print(f"获取 IPv{version} CIDR 失败: {e}")
-                return []
-        
-        raw_ipv4_cidrs = get_cidrs(CF_IPV4_URL, 4)
-        # 仅保留允许的前缀段（通过 ALLOWED_IPV4_PREFIXES 环境变量配置）
+        """仅获取 IPv4 CIDR 列表"""
+        try:
+            response = self.session.get(CF_IPV4_URL, timeout=15)
+            response.raise_for_status()
+            raw_ipv4_cidrs = [line.strip() for line in response.text.splitlines() if line.strip()]
+        except Exception as e:
+            print(f"获取 IPv4 CIDR 失败: {e}")
+            return False
+
+        # 仅保留允许的前缀段
         self._ipv4_cidrs = [
             cidr for cidr in raw_ipv4_cidrs
             if any(cidr.startswith(prefix) for prefix in ALLOWED_IPV4_PREFIXES)
         ]
-        
-        if GENERATE_IPV6: 
-            self._ipv6_cidrs = get_cidrs(CF_IPV6_URL, 6)
-            
         return bool(self._ipv4_cidrs)
 
-    def generate_random_ip_from_cidr(self, cidr: str, is_ipv6: bool = False) -> Optional[str]:
+    def generate_random_ip_from_cidr(self, cidr: str) -> Optional[str]:
+        """从 CIDR 中随机生成一个 IPv4 地址"""
         try:
             network = ipaddress.ip_network(cidr, strict=False)
             net_int, bcast_int = int(network.network_address), int(network.broadcast_address)
-            start, end = (net_int + 1, bcast_int - 1) if network.prefixlen <= (126 if is_ipv6 else 30) else (net_int, bcast_int)
-            return str(ipaddress.ip_address(random.randint(start, end))) if start <= end else None
-        except: return None
+            start, end = (net_int + 1, bcast_int - 1) if network.prefixlen <= 30 else (net_int, bcast_int)
+            if start <= end:
+                return str(ipaddress.ip_address(random.randint(start, end)))
+        except:
+            pass
+        return None
 
     def test_ip_worker(self, ip_address: str) -> Tuple[str, bool, int]:
         try:
-            url = TEST_URL_TEMPLATE.format(ip=f"[{ip_address}]" if ':' in ip_address else ip_address)
+            url = TEST_URL_TEMPLATE.format(ip=ip_address)
             resp = self.session.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=False, verify=False)
             return ip_address, (resp.status_code == EXPECTED_STATUS_CODE), resp.status_code
-        except: return ip_address, False, 0
+        except:
+            return ip_address, False, 0
 
-    def generate_and_test_ips_concurrent(self, num_ips: int, is_ipv6: bool = False) -> List[str]:
-        if num_ips <= 0: return []
-        cidrs = self._ipv6_cidrs if is_ipv6 else self._ipv4_cidrs
+    def generate_and_test_ips_concurrent(self, num_ips: int) -> List[str]:
+        """生成并测试指定数量的优质 IPv4"""
+        if num_ips <= 0:
+            return []
         qualified_ips, attempted_ips = [], set()
         max_attempts = num_ips * ATTEMPT_MULTIPLIER
-        
+
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             future_to_ip = {}
+
             def submit():
                 nonlocal max_attempts
-                if max_attempts <= 0: return False
+                if max_attempts <= 0:
+                    return False
                 for _ in range(10):
-                    ip = self.generate_random_ip_from_cidr(random.choice(cidrs), is_ipv6)
+                    ip = self.generate_random_ip_from_cidr(random.choice(self._ipv4_cidrs))
                     if ip and ip not in attempted_ips:
                         attempted_ips.add(ip)
                         max_attempts -= 1
@@ -147,7 +146,10 @@ class CloudflareIPManager:
                         return True
                 return False
 
-            for _ in range(min(MAX_WORKERS * 2, max_attempts)): submit()
+            # 初始填充任务
+            for _ in range(min(MAX_WORKERS * 2, max_attempts)):
+                submit()
+
             while future_to_ip and len(qualified_ips) < num_ips:
                 for future in as_completed(future_to_ip):
                     ip = future_to_ip.pop(future)
@@ -156,9 +158,12 @@ class CloudflareIPManager:
                         if ok and res_ip not in qualified_ips:
                             qualified_ips.append(res_ip)
                             print(f"✓ 已找到 {len(qualified_ips)}/{num_ips}: {res_ip}")
-                    except: pass
-                    if len(qualified_ips) < num_ips: submit()
-                    else: break
+                    except:
+                        pass
+                    if len(qualified_ips) < num_ips:
+                        submit()
+                    else:
+                        break
         return qualified_ips
 
 # ========== DNS & 通知类 ==========
@@ -186,11 +191,13 @@ class TencentDNSManager:
 class NotificationManager:
     @staticmethod
     def send_telegram(text: str):
-        if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return
+        if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+            return
         try:
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
             requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}, timeout=10)
-        except Exception as e: print(f"TG 发送失败: {e}")
+        except Exception as e:
+            print(f"TG 发送失败: {e}")
 
 # ========== 分配逻辑 ==========
 def distribute_to_subdomains(ip_pool: List[str]) -> Dict[str, List[str]]:
@@ -207,10 +214,9 @@ def distribute_to_subdomains(ip_pool: List[str]) -> Dict[str, List[str]]:
 # ========== 主程序 ==========
 def main():
     requests.packages.urllib3.disable_warnings()
-    # 构建允许段描述
     ipv4_desc = "、".join(ALLOWED_IPV4_PREFIXES) if ALLOWED_IPV4_PREFIXES else "全部"
     print("=" * 60)
-    print("Cloudflare 优选 IP 生成器 (固定子域名版本)")
+    print("Cloudflare 优选 IP 生成器 (仅 IPv4)")
     print(f"子域名列表: {SUB_DOMAINS} | 每个子域名 {IPS_PER_SUBDOMAIN} 个 IP")
     print(f"IPv4 段: {ipv4_desc} 开头")
     print("=" * 60)
@@ -226,13 +232,12 @@ def main():
     if not ip_manager.fetch_cloudflare_ips():
         sys.exit(1)
 
-    print(f"需要 IPv4 数量: {NEEDED_IPV4} | 需要 IPv6 数量: {NEEDED_IPV6}")
+    print(f"需要 IPv4 数量: {NEEDED_IPV4}")
 
-    ipv4_pool = ip_manager.generate_and_test_ips_concurrent(NEEDED_IPV4, is_ipv6=False)
-    ipv6_pool = ip_manager.generate_and_test_ips_concurrent(NEEDED_IPV6, is_ipv6=True) if GENERATE_IPV6 else []
+    ipv4_pool = ip_manager.generate_and_test_ips_concurrent(NEEDED_IPV4)
 
     report = [
-        f"<b>Cloudflare 优选报告 (固定子域名)</b>",
+        f"<b>Cloudflare 优选报告 (仅 IPv4)</b>",
         f"域名: {DOMAIN}",
         f"时间: {time.strftime('%Y-%m-%d %H:%M:%S')}",
         f"IPv4 范围: {ipv4_desc} 段",
@@ -255,25 +260,7 @@ def main():
         else:
             v4_status = f"❌ 数量不足 ({len(ipv4_pool)}/{NEEDED_IPV4})，已跳过"
 
-    # 处理 IPv6
-    v6_status = "未生成"
-    v6_details = ""
-    if GENERATE_IPV6 and NEEDED_IPV6 > 0:
-        if len(ipv6_pool) >= NEEDED_IPV6:
-            for sub in SUB_DOMAINS:
-                dns_manager.delete_records_by_subdomain_and_type(DOMAIN, sub, 'AAAA')
-            dist = distribute_to_subdomains(ipv6_pool)
-            for sub, ips in dist.items():
-                for ip in ips:
-                    dns_manager.add_record(DOMAIN, sub, 'AAAA', '默认', ip)
-                v6_details += f"\n  {sub}.{DOMAIN} → {', '.join(ips)}"
-            v6_status = f"✅ 更新成功 ({len(ipv6_pool)} 个 IP)"
-        else:
-            v6_status = f"❌ 数量不足 ({len(ipv6_pool)}/{NEEDED_IPV6})，已跳过"
-
     report.append(f"IPv4: {v4_status}{v4_details}")
-    if GENERATE_IPV6:
-        report.append(f"IPv6: {v6_status}{v6_details}")
 
     final_text = "\n".join(report)
     print("\n" + final_text.replace("<b>","").replace("</b>",""))
