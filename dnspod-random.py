@@ -28,7 +28,7 @@ TENCENT_SECRET_KEY = os.environ.get("TENCENT_SECRET_KEY")
 DOMAIN = os.environ.get("DOMAIN")
 
 # 固定子域名及每条记录的 IP 数量
-SUB_DOMAINS = ['1-1', '1-2', '2-1', '2-2']
+SUB_DOMAINS = ['1-1-1', '1-1-2', '1-2-1', '1-2-2', '2-1-1', '2-1-2', '2-2-1', '2-2-2',]
 IPS_PER_SUBDOMAIN = 2   # 每个子域名分配 2 个 IP
 
 TEST_URL_TEMPLATE = os.environ.get("TEST_URL_TEMPLATE", "http://{ip}:443/")
