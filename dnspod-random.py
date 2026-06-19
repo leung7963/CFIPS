@@ -40,7 +40,7 @@ GENERATE_IPV6 = os.environ.get("GENERATE_IPV6", "true").lower() == "true"
 
 # 允许的 IPv4 段（逗号分隔的前缀列表，例如: "104.,172."）
 ALLOWED_IPV4_PREFIXES = [
-    p.strip() for p in os.environ.get("ALLOWED_IPV4_PREFIXES", "172.").split(",") if p.strip()
+    p.strip() for p in os.environ.get("ALLOWED_IPV4_PREFIXES", "104.26").split(",") if p.strip()
 ]
 
 CF_IPV4_URL = "https://www.cloudflare.com/ips-v4"
