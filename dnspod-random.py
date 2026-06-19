@@ -35,7 +35,7 @@ IPS_PER_SUBDOMAIN = 2   # 每个子域名分配 2 个 IP
 TEST_URL_TEMPLATE = os.environ.get("TEST_URL_TEMPLATE", "http://{ip}:2096/")
 EXPECTED_STATUS_CODE = int(os.environ.get("EXPECTED_STATUS_CODE", "400"))
 REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "5"))
-MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "500"))
+MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "1000"))
 ATTEMPT_MULTIPLIER = int(os.environ.get("ATTEMPT_MULTIPLIER", "10000"))
 
 # 允许的 IPv4 段 —— 现在代表“生成的 IP 地址的前缀”，例如 "104.26." 会匹配 104.26.x.x
