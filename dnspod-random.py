@@ -9,6 +9,7 @@ Cloudflare 优选 IP 生成器 + 腾讯云 DNS 更新 (固定子域名版本)
   现在代表“生成 IP 的前缀”而非 CIDR 前缀。
 - 已移除 IPv6 支持
 - 包含 Telegram 通知
+- 已移除 IP 生成次数上限，会持续生成直到找到足够数量的 IP
 """
 
 import os
@@ -36,6 +37,9 @@ TEST_URL_TEMPLATE = os.environ.get("TEST_URL_TEMPLATE", "http://{ip}:2096/")
 EXPECTED_STATUS_CODE = int(os.environ.get("EXPECTED_STATUS_CODE", "400"))
 REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "5"))
 MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "1000"))
+
+# 注意：ATTEMPT_MULTIPLIER 环境变量已不再使用（生成次数不再受限）
+# 保留变量定义以兼容旧配置，但实际无效果
 ATTEMPT_MULTIPLIER = int(os.environ.get("ATTEMPT_MULTIPLIER", "10000"))
 
 # 允许的 IPv4 段 —— 现在代表“生成的 IP 地址的前缀”，例如 "104.26." 会匹配 104.26.x.x
@@ -128,50 +132,52 @@ class CloudflareIPManager:
             return ip_address, False, 0
 
     def generate_and_test_ips_concurrent(self, num_ips: int) -> List[str]:
-        """生成并测试指定数量的优质 IPv4，仅保留符合 IP 前缀的地址"""
+        """生成并测试指定数量的优质 IPv4，无尝试次数上限，仅保留符合 IP 前缀的地址"""
         if num_ips <= 0:
             return []
-        qualified_ips, attempted_ips = [], set()
-        max_attempts = num_ips * ATTEMPT_MULTIPLIER
+        
+        qualified_ips = []
+        attempted_ips = set()
+
+        def submit():
+            """尝试生成一个未测试且符合前缀的新 IP 并提交任务，成功返回 True，否则 False"""
+            for _ in range(10):          # 最多尝试 10 次生成新 IP
+                ip = self.generate_random_ip_from_cidr(random.choice(self._ipv4_cidrs))
+                if ip and ip not in attempted_ips:
+                    attempted_ips.add(ip)
+                    if self._ip_matches_allowed_prefix(ip):
+                        future = executor.submit(self.test_ip_worker, ip)
+                        future_to_ip[future] = ip
+                        return True
+            return False                # 无法生成新 IP
 
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             future_to_ip = {}
 
-            def submit():
-                nonlocal max_attempts
-                if max_attempts <= 0:
-                    return False
-                for _ in range(10):
-                    ip = self.generate_random_ip_from_cidr(random.choice(self._ipv4_cidrs))
-                    if ip and ip not in attempted_ips:
-                        attempted_ips.add(ip)
-                        max_attempts -= 1
-                        # 只测试符合 IP 前缀的地址
-                        if self._ip_matches_allowed_prefix(ip):
-                            future_to_ip[executor.submit(self.test_ip_worker, ip)] = ip
-                            return True
-                return False
+            # 外层循环，直到找到足够的 IP
+            while len(qualified_ips) < num_ips:
+                # 补充任务至 MAX_WORKERS 个（或无法生成新 IP 为止）
+                while len(future_to_ip) < MAX_WORKERS:
+                    if not submit():
+                        break
+                if not future_to_ip:     # 没有可运行的任务，且未达标，则退出
+                    break
 
-            # 初始填充任务
-            for _ in range(min(MAX_WORKERS * 2, max_attempts)):
-                submit()
-
-            while future_to_ip and len(qualified_ips) < num_ips:
-                for future in as_completed(future_to_ip):
-                    ip = future_to_ip.pop(future)
+                # 等待一批任务完成（复制 future 列表，避免迭代时修改字典影响迭代器）
+                for future in as_completed(list(future_to_ip.keys())):
+                    ip = future_to_ip.pop(future, None)
                     try:
                         res_ip, ok, status = future.result()
-                        # ----- 输出每个 IP 的状态码 -----
                         print(f"  [测试] {ip} → {status} {'✓' if ok else '✗'}")
                         if ok and res_ip not in qualified_ips:
                             qualified_ips.append(res_ip)
                             print(f"✓ 已找到 {len(qualified_ips)}/{num_ips}: {res_ip}")
                     except:
                         pass
-                    if len(qualified_ips) < num_ips:
-                        submit()
-                    else:
+                    # 若已达标，提前跳出
+                    if len(qualified_ips) >= num_ips:
                         break
+
         return qualified_ips
 
 # ========== DNS & 通知类 ==========
