@@ -65,7 +65,7 @@ jobs:
 
   delete-old-runs:
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule'   # 仅定时运行时清理，手动触发不清理
+    #if: github.event_name == 'schedule'   # 仅定时运行时清理，手动触发不清理
     permissions:
       actions: write                      # 删除运行记录需要此权限
     steps:
