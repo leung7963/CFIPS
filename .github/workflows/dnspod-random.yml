@@ -54,25 +54,11 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.CHAT_ID }}
 
         run: python -u dnspod-random.py
-
-  workflow-keepalive:
-    #if: github.event_name == 'schedule'
-    runs-on: ubuntu-latest
-    permissions:
-      actions: write
-    steps:
-      - uses: leung7963/gh-workflow-keepalive@main
-
-  delete-old-runs:
-    runs-on: ubuntu-latest
-    permissions:
-      actions: write
-    steps:
       - name: 删除旧的运行记录
-        uses: Mattraks/delete-workflow-runs@v2
+        uses: leung7963/delete-workflow-runs@main
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          repository: ${{ github.repository }}
-          delete_workflow_pattern: ${{ github.workflow }}  # 自动匹配当前工作流
-          retain_days: 1
-          keep_minimum_runs: 0
+            token: ${{ secrets.GITHUB_TOKEN }}
+            repository: ${{ github.repository }}
+            delete_workflow_pattern: ${{ github.workflow }}  # 自动匹配当前工作流
+            use_daily_retention: "true"
+            keep_minimum_runs: 1
