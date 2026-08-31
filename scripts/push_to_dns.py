@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # ===== 配置 =====
-INPUT_FILE = "generated_ips.txt"  # 由 generate_ips.py 生成
+INPUT_FILE = "IPlist-Pro.txt"  # 由 generate_ips.py 生成的高级优选 IP 列表
 
 # CFIPS 原生常量（内联复用，无需外部模块）
 SUB_DOMAINS = ["1-1-1", "1-1-2", "1-2-1", "1-2-2", "2-1-1", "2-1-2", "2-2-1", "2-2-2"]
