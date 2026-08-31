@@ -10,6 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write  # 用于启用工作流
 
     steps:
       - name: 检出代码
@@ -27,7 +28,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
 
-      # ===== 步骤 1: 生成优选 IP（独立重写，无外部克隆）=====
+      # ===== 步骤 1: 生成优选 IP =====
       - name: 生成优选 IP
         run: |
           python scripts/generate_ips.py
@@ -46,6 +47,7 @@ jobs:
       # ===== 清理旧运行记录 =====
       - name: 删除旧的运行记录
         uses: leung7963/delete-workflow-runs@main
+        if: always()  # 即使前面步骤失败也执行
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}
@@ -54,4 +56,8 @@ jobs:
           keep_minimum_runs: 1
           retain_days: 1
 
-      - uses: leung7963/gh-workflow-keepalive@main
+      # ===== 保持工作流启用（可选，失败不影响主流程）=====
+      - name: 启用工作流（可选）
+        if: always()  # 即使前面步骤失败也执行
+        continue-on-error: true  # 失败不阻断
+        uses: leung7963/gh-workflow-keepalive@main
