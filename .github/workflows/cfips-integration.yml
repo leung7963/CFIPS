@@ -31,7 +31,7 @@ jobs:
       # ===== 步骤 1: 生成优选 IP =====
       - name: 生成优选 IP
         run: |
-          python scripts/generate_ips.py
+          python generate_ips.py
 
       # ===== 步骤 2: 推送 IP 到腾讯云 DNS =====
       - name: 推送 IP 到腾讯云 DNS
@@ -42,7 +42,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
-          python scripts/push_to_dns.py
+          python push_to_dns.py
 
       # ===== 清理旧运行记录 =====
       - name: 删除旧的运行记录
