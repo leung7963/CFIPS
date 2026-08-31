@@ -28,7 +28,7 @@ INPUT_FILE = "IPlist-Pro.txt"  # 由 generate_ips.py 生成的高级优选 IP �
 
 # CFIPS 原生常量（内联复用，无需外部模块）
 SUB_DOMAINS = ["1-1-1", "1-1-2", "1-2-1", "1-2-2", "2-1-1", "2-1-2", "2-2-1", "2-2-2"]
-IPS_PER_SUBDOMAIN = 2  # 每个子域名分配的 IP 数
+IPS_PER_SUBDOMAIN = 1  # 每个子域名分配的 IP 数
 NEEDED_IPV4 = len(SUB_DOMAINS) * IPS_PER_SUBDOMAIN
 
 # 腾讯云 DNS 配置（需用户填入环境变量）
