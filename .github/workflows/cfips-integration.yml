@@ -1,0 +1,64 @@
+name: CFIPS 整合流程（Senflare-IP 生成 + DNS 推送）
+
+on:
+  schedule:
+    # 每 3 小时执行（与 Senflare-IP 原工作流频率一致）
+    - cron: '0 */3 * * *'
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  generate-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests urllib3 tencentcloud-sdk-python beautifulsoup4
+
+      # ===== 步骤 1: Senflare-IP 生成优选 IP =====
+      - name: 生成优选 IP（Senflare-IP）
+        env:
+          # 若需要限制 IP 前缀，可设置 ALLOWED_IPV4_PREFIXES
+          # ALLOWED_IPV4_PREFIXES: ${{ secrets.ALLOWED_IPV4_PREFIXES }}
+          PYTHONPATH: "${{ github.workspace }}/scripts"
+        run: |
+          python scripts/generate_ips.py
+
+      # ===== 步骤 2: CFIPS 推送 IP 到腾讯云 DNS =====
+      - name: 推送 IP 到腾讯云 DNS（CFIPS）
+        env:
+          TENCENT_SECRET_ID: ${{ secrets.TENCENT_SECRET_ID }}
+          TENCENT_SECRET_KEY: ${{ secrets.TENCENT_SECRET_KEY }}
+          DOMAIN: ${{ secrets.DOMAIN }}
+          # 可选 Telegram 通知
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          PYTHONPATH: "${{ github.workspace }}/scripts"
+        run: |
+          python scripts/push_to_dns.py
+
+      # ===== 清理旧运行记录（保持仓库整洁）=====
+      - name: 删除旧的运行记录
+        uses: leung7963/delete-workflow-runs@main
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          delete_workflow_pattern: ${{ github.workflow }}
+          use_daily_retention: "true"
+          keep_minimum_runs: 1
+          retain_days: 1
+
+      - uses: leung7963/gh-workflow-keepalive@main
