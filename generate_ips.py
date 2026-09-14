@@ -6,7 +6,7 @@ CFIPS 优选 IP 采集器（CIDR 扫描版 - 步骤 1/2）
 从指定 CIDR 段生成 IP → HTTP 状态码 403 过滤 → 并发测速 → 输出排序结果。
 
 用法：
-  python generate_ips.py                    # 默认 104.26.0.0/16 + 162.159.0.0/16 + 172.64.0.0/13
+  python generate_ips.py                    # 默认从 Cloudflare 官网拉取全部 IP 段
   python generate_ips.py --cidr 104.26.0.0/20   # 自定义单个 CIDR
   python generate_ips.py --cidr 104.26.0.0/16 162.159.0.0/16   # 多个 CIDR
   python generate_ips.py --cidr 104.26.0.0/16 --workers 100 --timeout 5
@@ -35,7 +35,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ===== 默认配置 =====
-DEFAULT_CIDRS = ["104.26.0.0/16", "162.159.0.0/16", "172.64.0.0/13"]
+CLOUDFLARE_IPS_URL = "https://www.cloudflare.com/ips-v4/"  # Cloudflare 官方 IPv4 段列表
+DEFAULT_CIDRS = None  # None = 自动从官网拉取
 TEST_URL = "https://speed.cloudflare.com"  # Cloudflare 控制页面，正常 IP 返回 403
 HTTP_TIMEOUT = 5        # HTTP 超时（秒）
 TCP_TIMEOUT = 3         # TCP 超时（秒）
@@ -68,6 +69,21 @@ def generate_ips_from_cidr(cidr, sample=0):
         all_hosts = random.sample(all_hosts, sample)
         logger.info(f"  随机抽样 {sample} 个 IP（共 {net.num_addresses} 个）")
     return all_hosts
+
+
+# ===== Cloudflare 官方 IP 段获取 =====
+def fetch_cloudflare_cidrs(url=CLOUDFLARE_IPS_URL):
+    """从 Cloudflare 官网拉取 IPv4 CIDR 段列表"""
+    try:
+        resp = session.get(url, timeout=10)
+        resp.raise_for_status()
+        cidrs = [line.strip() for line in resp.text.strip().splitlines()
+                 if line.strip() and re.match(r'^\d+\.\d+\.\d+\.\d+/\d+$', line.strip())]
+        logger.info(f"✅ 从 {url} 获取到 {len(cidrs)} 个 CIDR 段")
+        return cidrs
+    except Exception as e:
+        logger.error(f"❌ 无法从 {url} 获取 IP 段：{e}")
+        return None
 
 
 # ===== 阶段 1：HTTP 状态码 403 过滤 =====
@@ -250,7 +266,7 @@ def _save_results(collected, output_dir, target):
 # ===== 主程序 =====
 def main():
     parser = argparse.ArgumentParser(description="CFIPS CIDR 扫描优选 IP 采集器")
-    parser.add_argument("--cidr", nargs="+", default=DEFAULT_CIDRS, help=f"CIDR 段，可指定多个（默认 {' '.join(DEFAULT_CIDRS)}）")
+    parser.add_argument("--cidr", nargs="+", default=None, help="CIDR 段，可指定多个（不指定则自动从 Cloudflare 官网获取）")
     parser.add_argument("--sample", type=int, default=0, help="从 CIDR 随机抽样 N 个 IP（0=全部）")
     parser.add_argument("--workers", type=int, default=MAX_WORKERS, help=f"并发线程数（默认 {MAX_WORKERS}）")
     parser.add_argument("--http-timeout", type=float, default=HTTP_TIMEOUT, help=f"HTTP 超时秒数（默认 {HTTP_TIMEOUT}）")
@@ -264,9 +280,19 @@ def main():
     max_workers = args.workers
     http_timeout = args.http_timeout
 
-    # 支持多个 CIDR：合并所有网段的 IP
+    # 确定 CIDR 列表：手动指定 → 用指定值；否则从 Cloudflare 官网拉取
+    if args.cidr:
+        cidrs = args.cidr
+        print(f"使用指定 CIDR: {' + '.join(cidrs)}")
+    else:
+        cidrs = fetch_cloudflare_cidrs()
+        if not cidrs:
+            logger.error("❌ 无法获取 Cloudflare IP 段，退出")
+            sys.exit(1)
+
+    # 合并所有网段的 IP
     all_hosts = []
-    for cidr in args.cidr:
+    for cidr in cidrs:
         net = ipaddress.ip_network(cidr, strict=False)
         all_hosts.extend([str(ip) for ip in net.hosts()])
     # 去重（不同 CIDR 可能有重叠 IP）
@@ -276,7 +302,7 @@ def main():
     collected = []   # (ip, delay, bw, score)
     seen_ips = set()  # 已测试过的 IP，避免重复
 
-    cidr_summary = " + ".join(args.cidr)
+    cidr_summary = " + ".join(cidrs)
     print("=" * 60)
     print(f"CFIPS CIDR 扫描优选 IP 采集器")
     print(f"目标 CIDR: {cidr_summary}（共 {len(all_hosts)} 个 IP）")
