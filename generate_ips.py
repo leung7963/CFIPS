@@ -6,7 +6,7 @@ CFIPS 优选 IP 采集器（CIDR 扫描版 - 步骤 1/2）
 从指定 CIDR 段生成 IP → HTTP 状态码 403 过滤 → 并发测速 → 输出排序结果。
 
 用法：
-  python generate_ips.py                    # 默认 104.26.0.0/16 + 162.159.0.0/16
+  python generate_ips.py                    # 默认 104.26.0.0/16 + 162.159.0.0/16 + 172.64.0.0/13
   python generate_ips.py --cidr 104.26.0.0/20   # 自定义单个 CIDR
   python generate_ips.py --cidr 104.26.0.0/16 162.159.0.0/16   # 多个 CIDR
   python generate_ips.py --cidr 104.26.0.0/16 --workers 100 --timeout 5
@@ -35,7 +35,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ===== 默认配置 =====
-DEFAULT_CIDRS = ["104.26.0.0/16", "162.159.0.0/16"]
+DEFAULT_CIDRS = ["104.26.0.0/16", "162.159.0.0/16", "172.64.0.0/13"]
 TEST_URL = "https://speed.cloudflare.com"  # Cloudflare 控制页面，正常 IP 返回 403
 HTTP_TIMEOUT = 5        # HTTP 超时（秒）
 TCP_TIMEOUT = 3         # TCP 超时（秒）
