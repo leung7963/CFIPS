@@ -6,8 +6,9 @@ CFIPS 优选 IP 采集器（CIDR 扫描版 - 步骤 1/2）
 从指定 CIDR 段生成 IP → HTTP 状态码 403 过滤 → 并发测速 → 输出排序结果。
 
 用法：
-  python generate_ips.py                    # 默认 104.26.0.0/16
-  python generate_ips.py --cidr 104.26.0.0/20   # 自定义 CIDR
+  python generate_ips.py                    # 默认 104.26.0.0/16 + 162.159.0.0/16
+  python generate_ips.py --cidr 104.26.0.0/20   # 自定义单个 CIDR
+  python generate_ips.py --cidr 104.26.0.0/16 162.159.0.0/16   # 多个 CIDR
   python generate_ips.py --cidr 104.26.0.0/16 --workers 100 --timeout 5
 """
 
@@ -34,7 +35,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ===== 默认配置 =====
-DEFAULT_CIDR = "104.26.0.0/16"
+DEFAULT_CIDRS = ["104.26.0.0/16", "162.159.0.0/16"]
 TEST_URL = "https://speed.cloudflare.com"  # Cloudflare 控制页面，正常 IP 返回 403
 HTTP_TIMEOUT = 5        # HTTP 超时（秒）
 TCP_TIMEOUT = 3         # TCP 超时（秒）
@@ -249,7 +250,7 @@ def _save_results(collected, output_dir, target):
 # ===== 主程序 =====
 def main():
     parser = argparse.ArgumentParser(description="CFIPS CIDR 扫描优选 IP 采集器")
-    parser.add_argument("--cidr", default=DEFAULT_CIDR, help=f"CIDR 段（默认 {DEFAULT_CIDR}）")
+    parser.add_argument("--cidr", nargs="+", default=DEFAULT_CIDRS, help=f"CIDR 段，可指定多个（默认 {' '.join(DEFAULT_CIDRS)}）")
     parser.add_argument("--sample", type=int, default=0, help="从 CIDR 随机抽样 N 个 IP（0=全部）")
     parser.add_argument("--workers", type=int, default=MAX_WORKERS, help=f"并发线程数（默认 {MAX_WORKERS}）")
     parser.add_argument("--http-timeout", type=float, default=HTTP_TIMEOUT, help=f"HTTP 超时秒数（默认 {HTTP_TIMEOUT}）")
@@ -262,15 +263,23 @@ def main():
     target = args.target_count
     max_workers = args.workers
     http_timeout = args.http_timeout
-    net = ipaddress.ip_network(args.cidr, strict=False)
-    all_hosts = [str(ip) for ip in net.hosts()]
+
+    # 支持多个 CIDR：合并所有网段的 IP
+    all_hosts = []
+    for cidr in args.cidr:
+        net = ipaddress.ip_network(cidr, strict=False)
+        all_hosts.extend([str(ip) for ip in net.hosts()])
+    # 去重（不同 CIDR 可能有重叠 IP）
+    all_hosts = list(dict.fromkeys(all_hosts))
+
     round_num = 0
     collected = []   # (ip, delay, bw, score)
     seen_ips = set()  # 已测试过的 IP，避免重复
 
+    cidr_summary = " + ".join(args.cidr)
     print("=" * 60)
     print(f"CFIPS CIDR 扫描优选 IP 采集器")
-    print(f"目标 CIDR: {args.cidr}（共 {len(all_hosts)} 个 IP）")
+    print(f"目标 CIDR: {cidr_summary}（共 {len(all_hosts)} 个 IP）")
     print(f"目标: 随机抽取直到获得 {target} 个有延迟+带宽的 IP")
     print("=" * 60)
 
