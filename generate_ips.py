@@ -35,7 +35,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ===== 默认配置 =====
-DEFAULT_CIDRS = ["104.26.0.0/16", "162.159.0.0/16", "172.64.0.0/13"]
+DEFAULT_CIDRS = ["104.26.0.0/16"]
 TEST_URL = "https://speed.cloudflare.com"  # Cloudflare 控制页面，正常 IP 返回 403
 HTTP_TIMEOUT = 5        # HTTP 超时（秒）
 TCP_TIMEOUT = 3         # TCP 超时（秒）
