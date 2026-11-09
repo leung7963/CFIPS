@@ -105,7 +105,7 @@ class TencentDNSManager:
     def add_record(self, domain, sub, record_type="A", line="默认", value="", weight=1):
         """新增记录"""
         payload = {"Domain": domain, "SubDomain": sub, "RecordType": record_type,
-                   "RecordLine": line, "Value": value, "TTL": 600, "Weight": weight}
+                   "RecordLine": line, "Value": value, "TTL": 86400, "Weight": weight}
         return self._call("CreateRecord", payload)
 
 
