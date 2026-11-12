@@ -3,17 +3,16 @@
 """
 CFIPS 优选 IP 采集器（CIDR 扫描版 - 步骤 1/2）
 ================================================
-从指定 CIDR 段生成 IP → HTTP 状态码 403 过滤 → 并发测速 → 输出排序结果。
+从 Cloudflare 官方 ips-v4 动态获取 CIDR → 生成 IP → HTTP 403 过滤 → 并发测速 → 输出排序结果。
 
 用法：
-  python generate_ips.py                    # 默认 104.26.0.0/16 + 162.159.0.0/16 + 172.64.0.0/13
-  python generate_ips.py --cidr 104.26.0.0/20   # 自定义单个 CIDR
-  python generate_ips.py --cidr 104.26.0.0/16 162.159.0.0/16   # 多个 CIDR
+  python generate_ips.py                    # 自动从 cloudflare.com/ips-v4 获取 CIDR
+  python generate_ips.py --cidr 104.26.0.0/20   # 自定义单个 CIDR（覆盖自动获取）
+  python generate_ips.py --cidr 104.26.0.0/16 162.159.0.0/16   # 多个 CIDR（覆盖自动获取）
   python generate_ips.py --cidr 104.26.0.0/16 --workers 100 --timeout 5
 """
 
 import os
-import re
 import sys
 import time
 import random
@@ -35,19 +34,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ===== 默认配置 =====
-DEFAULT_CIDRS = ["104.26.0.0/16"]
-TEST_URL = "https://speed.cloudflare.com"  # Cloudflare 控制页面，正常 IP 返回 403
-HTTP_TIMEOUT = 5        # HTTP 超时（秒）
-TCP_TIMEOUT = 3         # TCP 超时（秒）
-MAX_WORKERS = 200       # 并发线程数
-BATCH_SIZE = 500        # 每批大小
+CLOUDFLARE_IPS_V4_URL = "https://www.cloudflare.com/ips-v4/"
+FALLBACK_CIDRS = ["104.26.0.0/16"]  # 网络异常时的回退段
+TEST_URL = "https://speed.cloudflare.com"
+HTTP_TIMEOUT = 5
+TCP_TIMEOUT = 3
+MAX_WORKERS = 200
+BATCH_SIZE = 500
 BANDWIDTH_TEST_URLS = [
     "https://speed.cloudflare.com/__down?bytes={size}",
     "https://cp.cloudflare.com/__down?bytes={size}",
 ]
-BANDWIDTH_TEST_SIZE = 5 * 1024 * 1024  # 5MB
+BANDWIDTH_TEST_SIZE = 5 * 1024 * 1024
 BANDWIDTH_TIMEOUT = 15
-LATENCY_FILTER_PCT = 30  # 延迟前 30% 进入带宽测试
+LATENCY_FILTER_PCT = 30
 
 # ===== 会话 =====
 session = requests.Session()
@@ -59,9 +59,32 @@ session.mount('http://', adapter)
 session.mount('https://', adapter)
 
 
+# ===== 动态获取 Cloudflare CIDR =====
+def fetch_cloudflare_cidrs():
+    """从 https://www.cloudflare.com/ips-v4/ 获取最新 CIDR 列表"""
+    try:
+        resp = session.get(CLOUDFLARE_IPS_V4_URL, timeout=10, verify=False)
+        resp.raise_for_status()
+        cidrs = [line.strip() for line in resp.text.splitlines() if line.strip()]
+        # 基本校验：必须是合法 CIDR
+        valid = []
+        for c in cidrs:
+            try:
+                ipaddress.ip_network(c, strict=False)
+                valid.append(c)
+            except ValueError:
+                logger.warning(f"  ⚠️ 跳过非法 CIDR: {c}")
+        if valid:
+            logger.info(f"✅ 从 Cloudflare 官方获取到 {len(valid)} 个 CIDR 段")
+            return valid
+    except Exception as e:
+        logger.error(f"❌ 获取 Cloudflare CIDR 失败: {e}")
+    logger.warning(f"⚠️ 回退到默认 CIDR: {FALLBACK_CIDRS}")
+    return FALLBACK_CIDRS
+
+
 # ===== IP 生成 =====
 def generate_ips_from_cidr(cidr, sample=0):
-    """从 CIDR 生成 IP，sample>0 时随机抽样"""
     net = ipaddress.ip_network(cidr, strict=False)
     all_hosts = [str(ip) for ip in net.hosts()]
     if sample > 0 and len(all_hosts) > sample:
@@ -72,7 +95,6 @@ def generate_ips_from_cidr(cidr, sample=0):
 
 # ===== 阶段 1：HTTP 状态码 403 过滤 =====
 def check_http_403(ip):
-    """检查 IP 是否返回 HTTP 403（Cloudflare 代理特征）"""
     for scheme in ("https", "http"):
         try:
             resp = session.request(
@@ -84,7 +106,6 @@ def check_http_403(ip):
             )
             if resp.status_code == 403:
                 return True
-            # 有些 IP 返回 5xx 也算可用
             if resp.status_code in (502, 503, 521, 522, 523, 524, 525, 526):
                 return True
         except Exception:
@@ -93,11 +114,9 @@ def check_http_403(ip):
 
 
 def filter_403_ips(ips, max_workers=MAX_WORKERS):
-    """并发过滤返回 403 的 IP"""
     valid = []
     total = len(ips)
     done = 0
-
     for i in range(0, total, BATCH_SIZE):
         batch = ips[i:i + BATCH_SIZE]
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -112,14 +131,12 @@ def filter_403_ips(ips, max_workers=MAX_WORKERS):
                     pass
                 if done % 1000 == 0:
                     logger.info(f"  HTTP 过滤进度: {done}/{total}（已找到 {len(valid)} 个 403 IP）")
-
     logger.info(f"✅ HTTP 403 过滤: {total} → {len(valid)} 个 IP")
     return valid
 
 
 # ===== 阶段 2：TCP 连通性 + 延迟测试 =====
 def tcp_ping(ip):
-    """TCP 连接测试，返回 (可用, 延迟ms)"""
     min_delay = float('inf')
     for port in (443, 80):
         try:
@@ -137,11 +154,9 @@ def tcp_ping(ip):
 
 
 def test_tcp_batch(ips, max_workers=MAX_WORKERS):
-    """并发 TCP 测试"""
     available = []
     total = len(ips)
     done = 0
-
     for i in range(0, total, BATCH_SIZE):
         batch = ips[i:i + BATCH_SIZE]
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -157,14 +172,12 @@ def test_tcp_batch(ips, max_workers=MAX_WORKERS):
                     pass
                 if done % 1000 == 0:
                     logger.info(f"  TCP 测试进度: {done}/{total}（已找到 {len(available)} 个可用 IP）")
-
     logger.info(f"✅ TCP 测试: {total} → {len(available)} 个可用 IP")
     return available
 
 
 # ===== 阶段 3：延迟筛选 =====
 def latency_filter(ip_delay_list, percentage=LATENCY_FILTER_PCT):
-    """取延迟最低的前 N%"""
     if not ip_delay_list:
         return []
     sorted_list = sorted(ip_delay_list, key=lambda x: x[1])
@@ -174,10 +187,8 @@ def latency_filter(ip_delay_list, percentage=LATENCY_FILTER_PCT):
 
 # ===== 阶段 4：带宽测试 =====
 def test_bandwidth(ip):
-    """HTTP 下载带宽测试"""
     urls = [url.format(size=BANDWIDTH_TEST_SIZE) for url in BANDWIDTH_TEST_URLS]
     best_speed = 0
-
     for url in urls:
         for _ in range(3):
             try:
@@ -193,7 +204,7 @@ def test_bandwidth(ip):
                                 break
                     dl_time = time.time() - dl_start
                     if dl_time > 0 and data_size > 0:
-                        speed = (data_size * 8) / (dl_time * 1_000_000)  # Mbps
+                        speed = (data_size * 8) / (dl_time * 1_000_000)
                         best_speed = max(best_speed, speed)
                         if speed > 5:
                             return best_speed
@@ -204,44 +215,34 @@ def test_bandwidth(ip):
 
 # ===== 综合评分 =====
 def calculate_score(delay, bandwidth):
-    """综合评分 (0-100)：延迟 40% + 带宽 30% + 基础 30%"""
-    # 延迟分 (0-40)
     if delay <= 50:    delay_score = 40
     elif delay <= 100: delay_score = 35
     elif delay <= 200: delay_score = 30
     elif delay <= 300: delay_score = 25
     else:              delay_score = max(0, 20 - (delay - 300) / 10)
 
-    # 带宽分 (0-30)
     if bandwidth >= 50:  bw_score = 30
     elif bandwidth >= 20: bw_score = 25
     elif bandwidth >= 10: bw_score = 20
     elif bandwidth >= 5:  bw_score = 15
     else:                 bw_score = max(0, bandwidth * 3)
 
-    # 基础分 (30)
     base_score = 30
-
     return round(delay_score + bw_score + base_score, 1)
 
 
 # ===== 保存结果 =====
-def _save_results(collected, output_dir, target):
-    """实时保存当前结果"""
+def _save_results(collected, output_dir):
     os.makedirs(output_dir, exist_ok=True)
-
     with open(os.path.join(output_dir, 'IPlist.txt'), 'w') as f:
         for ip, _, _, _ in collected:
             f.write(f"{ip}\n")
-
     with open(os.path.join(output_dir, 'IPlist-Pro.txt'), 'w') as f:
         for ip, _, _, _ in collected:
             f.write(f"{ip}\n")
-
     with open(os.path.join(output_dir, 'Ranking.txt'), 'w') as f:
         for i, (ip, delay, bw, score) in enumerate(collected, 1):
             f.write(f"[{i}/{len(collected)}] {ip} 延迟={delay}ms 带宽={bw:.2f}Mbps 评分={score}\n")
-
     with open(os.path.join(output_dir, 'generated_ips.txt'), 'w') as f:
         for ip, _, _, _ in collected:
             f.write(f"{ip}\n")
@@ -249,14 +250,15 @@ def _save_results(collected, output_dir, target):
 
 # ===== 主程序 =====
 def main():
-    parser = argparse.ArgumentParser(description="CFIPS CIDR 扫描优选 IP 采集器")
-    parser.add_argument("--cidr", nargs="+", default=DEFAULT_CIDRS, help=f"CIDR 段，可指定多个（默认 {' '.join(DEFAULT_CIDRS)}）")
+    parser = argparse.ArgumentParser(description="CFIPS CIDR 扫描优选 IP 采集器（自动获取 Cloudflare CIDR）")
+    parser.add_argument("--cidr", nargs="+", default=None,
+                        help="手动指定 CIDR 段（不指定则自动从 cloudflare.com/ips-v4 获取）")
     parser.add_argument("--sample", type=int, default=0, help="从 CIDR 随机抽样 N 个 IP（0=全部）")
     parser.add_argument("--workers", type=int, default=MAX_WORKERS, help=f"并发线程数（默认 {MAX_WORKERS}）")
     parser.add_argument("--http-timeout", type=float, default=HTTP_TIMEOUT, help=f"HTTP 超时秒数（默认 {HTTP_TIMEOUT}）")
-    parser.add_argument("--skip-bandwidth", action="store_true", help="跳过带宽测试（只用延迟排序）")
+    parser.add_argument("--skip-bandwidth", action="store_true", help="跳过带宽测试")
     parser.add_argument("--output-dir", default=".", help="输出目录")
-    parser.add_argument("--target-count", type=int, default=16, help="目标优选 IP 数量（默认 16，会自动循环生成直到达到）")
+    parser.add_argument("--target-count", type=int, default=16, help="目标优选 IP 数量（默认 16）")
     args = parser.parse_args()
 
     start = time.time()
@@ -264,28 +266,34 @@ def main():
     max_workers = args.workers
     http_timeout = args.http_timeout
 
-    # 支持多个 CIDR：合并所有网段的 IP
+    # ===== 关键改动：CIDR 来源 =====
+    if args.cidr:
+        cidrs = args.cidr
+        logger.info(f"使用手动指定的 {len(cidrs)} 个 CIDR")
+    else:
+        cidrs = fetch_cloudflare_cidrs()
+
     all_hosts = []
-    for cidr in args.cidr:
+    for cidr in cidrs:
         net = ipaddress.ip_network(cidr, strict=False)
         all_hosts.extend([str(ip) for ip in net.hosts()])
-    # 去重（不同 CIDR 可能有重叠 IP）
     all_hosts = list(dict.fromkeys(all_hosts))
 
     round_num = 0
-    collected = []   # (ip, delay, bw, score)
-    seen_ips = set()  # 已测试过的 IP，避免重复
+    collected = []
+    seen_ips = set()
 
-    cidr_summary = " + ".join(args.cidr)
+    cidr_summary = " + ".join(cidrs[:5]) + (f" ... 共 {len(cidrs)} 个" if len(cidrs) > 5 else "")
     print("=" * 60)
     print(f"CFIPS CIDR 扫描优选 IP 采集器")
-    print(f"目标 CIDR: {cidr_summary}（共 {len(all_hosts)} 个 IP）")
+    print(f"CIDR 来源: {'手动指定' if args.cidr else 'Cloudflare 官方 ips-v4'}")
+    print(f"CIDR 摘要: {cidr_summary}")
+    print(f"总 IP 数: {len(all_hosts)}")
     print(f"目标: 随机抽取直到获得 {target} 个有延迟+带宽的 IP")
     print("=" * 60)
 
     while len(collected) < target:
         round_num += 1
-        # 计算本轮抽样数量：目标的 3 倍或剩余可用 IP 的最小值
         remaining = [ip for ip in all_hosts if ip not in seen_ips]
         if not remaining:
             logger.error(f"❌ CIDR 中所有 IP 已测试完毕，仍差 {target - len(collected)} 个")
@@ -296,31 +304,27 @@ def main():
         seen_ips.update(batch_ips)
         logger.info(f"\n🔄 第 {round_num} 轮：随机抽取 {len(batch_ips)} 个 IP（累计收集 {len(collected)}/{target}）")
 
-        # 阶段 1: HTTP 403 过滤
         logger.info(f"  🌐 HTTP 403 过滤...")
         ips_403 = filter_403_ips(batch_ips, max_workers)
         if not ips_403:
             logger.info(f"  ⏭️ 本轮无 403 IP，继续下一轮")
             continue
 
-        # 阶段 2: TCP 测试
         logger.info(f"  🔍 TCP 测试...")
         tcp_ok = test_tcp_batch(ips_403, max_workers)
         if not tcp_ok:
             logger.info(f"  ⏭️ 本轮无 TCP 可用 IP，继续下一轮")
             continue
 
-        # 阶段 3: 延迟筛选
         latency_top = latency_filter(tcp_ok, LATENCY_FILTER_PCT)
         logger.info(f"  🔍 延迟前 {LATENCY_FILTER_PCT}%：{len(latency_top)} 个 IP")
 
-        # 阶段 4: 带宽测试 + 评分
         if args.skip_bandwidth:
             for ip, delay in latency_top:
                 collected.append((ip, delay, 0, calculate_score(delay, 0)))
         else:
             logger.info(f"  ⚡ 带宽测试...")
-            for i, (ip, delay) in enumerate(latency_top, 1):
+            for ip, delay in latency_top:
                 bw = test_bandwidth(ip)
                 score = calculate_score(delay, bw)
                 collected.append((ip, delay, bw, score))
@@ -329,7 +333,6 @@ def main():
                 else:
                     logger.info(f"    ⚠️ {ip} 延迟={delay}ms 带宽=0Mbps（跳过）")
 
-        # 去重（同一 IP 可能多轮出现）
         seen_final = set()
         deduped = []
         for item in collected:
@@ -338,17 +341,12 @@ def main():
                 deduped.append(item)
         collected = deduped
 
-        # 实时保存中间结果
-        _save_results(collected, args.output_dir, target)
-
+        _save_results(collected, args.output_dir)
         logger.info(f"  📊 第 {round_num} 轮结束：累计 {len(collected)}/{target} 个优选 IP")
 
-    # 最终按评分排序
     collected.sort(key=lambda x: x[3], reverse=True)
-    collected = collected[:target]  # 只保留目标数量
-
-    # 最终保存
-    _save_results(collected, args.output_dir, target)
+    collected = collected[:target]
+    _save_results(collected, args.output_dir)
 
     elapsed = round(time.time() - start, 1)
     print(f"\n{'='*60}")
